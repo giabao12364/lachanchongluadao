@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    container_name: lachan_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lachan_user
+      POSTGRES_PASSWORD: lachan_pass
+      POSTGRES_DB: lachan_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - lachan_pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: lachan_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+volumes:
+  lachan_pgdata:
