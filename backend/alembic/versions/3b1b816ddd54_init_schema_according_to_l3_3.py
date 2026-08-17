@@ -1,8 +1,8 @@
-"""init schema theo L3.3
+"""init schema according to L3.3
 
-Revision ID: 1694254949c3
+Revision ID: 3b1b816ddd54
 Revises: 
-Create Date: 2026-07-19 12:01:26.521204
+Create Date: 2026-08-17 14:09:35.630345
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '1694254949c3'
+revision: str = '3b1b816ddd54'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -28,10 +28,10 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('key')
     )
     op.create_table('app_user',
-    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('id', sa.UUID(), server_default=sa.text('gen_random_uuid()'), nullable=False),
     sa.Column('phone_number', sa.String(length=20), nullable=False),
     sa.Column('display_name', sa.String(length=100), nullable=True),
-    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('is_active', sa.Boolean(), server_default=sa.text('true'), nullable=False),
     sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.PrimaryKeyConstraint('id'),
@@ -39,12 +39,12 @@ def upgrade() -> None:
     )
     op.create_table('blacklist_entity',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('entity_type', sa.Enum('URL', 'PHONE', 'BANK_ACCOUNT', 'DOMAIN', name='entity_type_blacklist'), nullable=False),
+    sa.Column('entity_type', sa.Enum('URL', 'PHONE', 'BANK_ACCOUNT', 'DOMAIN', name='entity_type'), nullable=False),
     sa.Column('normalized_value', sa.String(length=500), nullable=False),
     sa.Column('source', sa.Enum('COMMUNITY', 'PUBLIC_FEED', 'MANUAL', name='blacklist_source'), nullable=False),
-    sa.Column('confidence', sa.Integer(), nullable=False),
-    sa.Column('report_count', sa.Integer(), nullable=False),
-    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('confidence', sa.Integer(), server_default=sa.text('100'), nullable=False),
+    sa.Column('report_count', sa.Integer(), server_default=sa.text('1'), nullable=False),
+    sa.Column('is_active', sa.Boolean(), server_default=sa.text('true'), nullable=False),
     sa.Column('note', sa.Text(), nullable=True),
     sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -52,6 +52,34 @@ def upgrade() -> None:
     sa.UniqueConstraint('entity_type', 'normalized_value', name='uq_blacklist_entity_type_value')
     )
     op.create_index('idx_blacklist_entity_normalized_value_active', 'blacklist_entity', ['normalized_value'], unique=False, postgresql_where=sa.text('is_active = true'))
+    op.create_table('otp_request',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('phone_number', sa.String(length=20), nullable=False),
+    sa.Column('otp_hash', sa.String(length=255), nullable=False),
+    sa.Column('purpose', sa.String(length=20), nullable=False),
+    sa.Column('attempt_count', sa.Integer(), server_default=sa.text('0'), nullable=False),
+    sa.Column('expires_at', sa.TIMESTAMP(timezone=True), nullable=False),
+    sa.Column('consumed_at', sa.TIMESTAMP(timezone=True), nullable=True),
+    sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('idx_otp_request_phone_created', 'otp_request', ['phone_number', sa.text('created_at DESC')], unique=False)
+    op.create_table('scam_pattern',
+    sa.Column('id', sa.UUID(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('title', sa.String(length=255), nullable=False),
+    sa.Column('category', sa.String(length=100), nullable=False),
+    sa.Column('image_url', sa.Text(), nullable=True),
+    sa.Column('description', sa.Text(), nullable=False),
+    sa.Column('signs', sa.Text(), nullable=False),
+    sa.Column('example_content', sa.Text(), nullable=False),
+    sa.Column('recommended_action', sa.Text(), nullable=False),
+    sa.Column('is_active', sa.Boolean(), server_default=sa.text('false'), nullable=False),
+    sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('idx_scam_pattern_active_created', 'scam_pattern', ['is_active', sa.text('created_at DESC')], unique=False)
+    op.create_index('idx_scam_pattern_category', 'scam_pattern', ['category'], unique=False)
     op.create_table('scoring_rule',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('rule_code', sa.String(length=50), nullable=False),
@@ -60,7 +88,7 @@ def upgrade() -> None:
     sa.Column('pattern_type', sa.String(length=20), nullable=False),
     sa.Column('score', sa.Integer(), nullable=False),
     sa.Column('reason_text', sa.Text(), nullable=False),
-    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('is_active', sa.Boolean(), server_default=sa.text('true'), nullable=False),
     sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint('score between 0 and 100', name='ck_scoring_rule_score_range'),
     sa.PrimaryKeyConstraint('id'),
@@ -74,20 +102,21 @@ def upgrade() -> None:
     sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['app_user.id'], ),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('device_uid'),
-    sa.UniqueConstraint('device_uid', name='uq_device_device_uid')
+    sa.UniqueConstraint('device_uid')
     )
     op.create_table('scam_report',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
-    sa.Column('entity_type', sa.Enum('URL', 'PHONE', 'BANK_ACCOUNT', 'DOMAIN', name='entity_type_report'), nullable=False),
+    sa.Column('entity_type', sa.Enum('URL', 'PHONE', 'BANK_ACCOUNT', 'DOMAIN', name='entity_type'), nullable=False),
     sa.Column('normalized_value', sa.String(length=500), nullable=False),
     sa.Column('description', sa.Text(), nullable=True),
-    sa.Column('status', sa.Enum('PENDING', 'APPROVED', 'REJECTED', name='report_status'), nullable=False),
+    sa.Column('status', sa.Enum('PENDING', 'APPROVED', 'REJECTED', name='report_status'), server_default=sa.text("'PENDING'"), nullable=False),
     sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['app_user.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('user_id', 'entity_type', 'normalized_value', name='uq_scam_report_user_entity_value')
     )
+    op.create_index('idx_scam_report_normalized_value', 'scam_report', ['normalized_value'], unique=False)
     op.create_table('scan_request',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('device_id', sa.UUID(), nullable=False),
@@ -95,7 +124,7 @@ def upgrade() -> None:
     sa.Column('input_type', sa.Enum('TEXT', 'URL', 'PHONE', 'IMAGE', name='input_type'), nullable=False),
     sa.Column('raw_content', sa.Text(), nullable=False),
     sa.Column('normalized_text', sa.Text(), nullable=False),
-    sa.Column('status', sa.Enum('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', name='scan_status'), nullable=False),
+    sa.Column('status', sa.Enum('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', name='scan_status'), server_default=sa.text("'PENDING'"), nullable=False),
     sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('completed_at', sa.TIMESTAMP(timezone=True), nullable=True),
     sa.CheckConstraint('length(raw_content) between 1 and 5000', name='ck_scan_request_raw_content_len'),
@@ -103,8 +132,8 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['user_id'], ['app_user.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index('idx_scan_request_device_created', 'scan_request', ['device_id', 'created_at'], unique=False)
-    op.create_index('idx_scan_request_user_created', 'scan_request', ['user_id', 'created_at'], unique=False)
+    op.create_index('idx_scan_request_device_created', 'scan_request', ['device_id', sa.text('created_at DESC')], unique=False)
+    op.create_index('idx_scan_request_user_created', 'scan_request', ['user_id', sa.text('created_at DESC')], unique=False)
     op.create_table('scan_entity',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('scan_request_id', sa.UUID(), nullable=False),
@@ -124,8 +153,8 @@ def upgrade() -> None:
     sa.Column('final_score', sa.Integer(), nullable=False),
     sa.Column('rule_score', sa.Integer(), nullable=False),
     sa.Column('ai_score', sa.Integer(), nullable=True),
-    sa.Column('ai_available', sa.Boolean(), nullable=False),
-    sa.Column('has_hard_override', sa.Boolean(), nullable=False),
+    sa.Column('ai_available', sa.Boolean(), server_default=sa.text('true'), nullable=False),
+    sa.Column('has_hard_override', sa.Boolean(), server_default=sa.text('false'), nullable=False),
     sa.Column('recommended_action', sa.Text(), nullable=False),
     sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint('final_score between 0 and 100', name='ck_scan_result_final_score_range'),
@@ -162,10 +191,16 @@ def downgrade() -> None:
     op.drop_index('idx_scan_request_user_created', table_name='scan_request')
     op.drop_index('idx_scan_request_device_created', table_name='scan_request')
     op.drop_table('scan_request')
+    op.drop_index('idx_scam_report_normalized_value', table_name='scam_report')
     op.drop_table('scam_report')
     op.drop_table('device')
     op.drop_table('scoring_rule')
-    op.drop_index('idx_blacklist_entity_normalized_value_active', table_name='blacklist_entity')
+    op.drop_index('idx_scam_pattern_category', table_name='scam_pattern')
+    op.drop_index('idx_scam_pattern_active_created', table_name='scam_pattern')
+    op.drop_table('scam_pattern')
+    op.drop_index('idx_otp_request_phone_created', table_name='otp_request')
+    op.drop_table('otp_request')
+    op.drop_index('idx_blacklist_entity_normalized_value_active', table_name='blacklist_entity', postgresql_where=sa.text('is_active = true'))
     op.drop_table('blacklist_entity')
     op.drop_table('app_user')
     op.drop_table('app_config')
