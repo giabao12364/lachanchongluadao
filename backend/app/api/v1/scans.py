@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.db_models import (
-    ScanRequest, ScanResult, ScanSignal, ScanEntity, ScoringRule, BlacklistEntity, Device
+    ScanRequest, ScanResult, ScanSignal, ScanEntity, ScoringRule, BlacklistEntity, Device, AppUser,
+    InputType, ScanStatus, EntityType, SignalSource, RiskLevel,
 )
+from app.services.pipeline import execute_scan_pipeline
 
 router = APIRouter()
 
@@ -37,155 +39,107 @@ def decode_cursor(cursor: str):
         raise HTTPException(status_code=400, detail="Cursor không hợp lệ")
 
 
-def map_risk_level(level: Optional[str]) -> str:
-    if not level:
+def map_risk_level(level) -> str:
+    if level is None:
         return "AN_TOAN"
-    l = level.lower()
-    if l in ("high", "critical"):
+    s = str(level).upper()
+    if s in ("HIGH", "CRITICAL", "NGUY_HIEM"):
         return "NGUY_HIEM"
-    if l == "medium":
+    if s in ("MEDIUM", "CANH_BAO", "NGHI_NGO"):
         return "CANH_BAO"
     return "AN_TOAN"
 
 
-def compute_scan_basic(db: Session, content: str) -> Dict[str, Any]:
-    score = 0.0
-    reasons: List[Dict[str, Any]] = []
-    recommended_action = "Nội dung chưa thấy dấu hiệu lừa đảo nhưng vẫn cần cẩn trọng."
-    risk_level = "AN_TOAN"
-
-    rules = db.query(ScoringRule).filter(ScoringRule.is_active == True).all()
-
-    import re
-    for rule in rules:
-        if rule.condition_pattern:
-            try:
-                if re.search(rule.condition_pattern, content, re.IGNORECASE):
-                    score += rule.score_value
-                    reasons.append({
-                        "source": "RULE",
-                        "text": rule.description or rule.rule_name,
-                        "rule_code": rule.rule_code
-                    })
-            except re.error:
-                pass
-
-    keywords_blacklist = [
-        ("Công an", False), ("Viện kiểm sát", False), ("chuyển khoản", False),
-        ("OTP", False), ("khóa tài khoản", False), ("cập nhật thông tin", False),
-        ("http://", True), ("https://", True),
-    ]
-    for kw, is_url in keywords_blacklist:
-        if kw.lower() in content.lower():
-            score += 10
-            if not any(r.get("rule_code") == f"KW_{kw}" for r in reasons):
-                reasons.append({
-                    "source": "RULE",
-                    "text": f"Nội dung chứa từ khóa đáng ngờ: {kw}",
-                    "rule_code": f"KW_{kw}"
-                })
-
-    if score >= 70:
-        risk_level = "NGUY_HIEM"
-        recommended_action = "Rất có thể là lừa đảo. Không bấm link, không chuyển tiền."
-    elif score >= 30:
-        risk_level = "CANH_BAO"
-        recommended_action = "Có dấu hiệu đáng ngờ, cần xác minh kỹ trước khi làm theo."
-
-    score = min(score, 100)
-    return {
-        "score": score,
-        "risk_level": risk_level,
-        "reasons": reasons,
-        "recommended_action": recommended_action,
-    }
+def _to_enum_or_value(enum_cls, value, default=None):
+    if value is None:
+        return default
+    if isinstance(value, enum_cls):
+        return value
+    try:
+        return enum_cls(str(value).upper())
+    except Exception:
+        return default
 
 
 def extract_entities(db: Session, content: str, input_type: str) -> List[ScanEntity]:
     entities: List[ScanEntity] = []
-
     import re
 
     phone_pattern = r"(\+?84|0)(3[2-9]|5[2689]|7[06789]|8[1-689]|9[0-46-9])[0-9]{7}"
     url_pattern = r"https?://[^\s]+"
     bank_pattern = r"(stk|số? tài khoản)\s*[:#]?\s*(\d{8,16})"
 
+    def _find_blacklist(entity_type, normalized):
+        return db.query(BlacklistEntity).filter(
+            BlacklistEntity.entity_type == _to_enum_or_value(EntityType, entity_type, EntityType.OTHER),
+            BlacklistEntity.normalized_value == normalized,
+            BlacklistEntity.is_active == True
+        ).first()
+
     if input_type in ("PHONE", "TEXT"):
         for m in re.finditer(phone_pattern, content):
-            val = m.group(0)
-            normalized = val
-            if normalized.startswith("0"):
-                normalized = "+84" + normalized[1:]
-            bl = db.query(BlacklistEntity).filter(
-                BlacklistEntity.entity_type == "PHONE",
-                BlacklistEntity.entity_value == normalized,
-                BlacklistEntity.is_active == True
-            ).first()
-            risk = None
-            bl_id = None
-            if bl:
-                risk = bl.risk_level
-                bl_id = bl.id
+            raw = m.group(0)
+            digits = re.sub(r"\D", "", raw)
+            if digits.startswith("84"):
+                normalized = "+" + digits
+            elif digits.startswith("0"):
+                normalized = "+84" + digits[1:]
+            elif raw.startswith("+"):
+                normalized = raw
+            else:
+                normalized = "+84" + digits
+            bl = _find_blacklist("PHONE", normalized)
             entities.append(ScanEntity(
                 id=uuid.uuid4(),
-                entity_type="PHONE",
-                entity_value=normalized,
-                risk_level=risk,
-                matched_blacklist_id=bl_id,
+                entity_type=EntityType.PHONE,
+                raw_value=raw,
+                normalized_value=normalized,
             ))
 
     if input_type in ("URL", "TEXT"):
         for m in re.finditer(url_pattern, content):
-            val = m.group(0)
-            bl = db.query(BlacklistEntity).filter(
-                BlacklistEntity.entity_type == "URL",
-                BlacklistEntity.entity_value == val,
-                BlacklistEntity.is_active == True
-            ).first()
-            risk = None
-            bl_id = None
-            if bl:
-                risk = bl.risk_level
-                bl_id = bl.id
+            raw = m.group(0)
+            normalized = raw.strip().rstrip(".,;:!?)]}")
+            bl = _find_blacklist("URL", normalized)
             entities.append(ScanEntity(
                 id=uuid.uuid4(),
-                entity_type="URL",
-                entity_value=val,
-                risk_level=risk,
-                matched_blacklist_id=bl_id,
+                entity_type=EntityType.URL,
+                raw_value=raw,
+                normalized_value=normalized,
             ))
 
     if input_type == "TEXT":
         for m in re.finditer(bank_pattern, content, re.IGNORECASE):
-            val = m.group(2)
+            raw = m.group(2)
+            normalized = raw
             entities.append(ScanEntity(
                 id=uuid.uuid4(),
-                entity_type="BANK_ACCOUNT",
-                entity_value=val,
-                risk_level=None,
-                matched_blacklist_id=None,
+                entity_type=EntityType.BANK_ACCOUNT,
+                raw_value=raw,
+                normalized_value=normalized,
             ))
 
     return entities
 
 
-def ensure_device(db: Session, device_uid: str) -> Device:
-    device = db.query(Device).filter(Device.device_id == device_uid).first()
+def ensure_device(db: Session, device_uid: str, platform: str = "web") -> Device:
+    device = db.query(Device).filter(Device.device_uid == device_uid).first()
     if device:
         return device
-    from app.models.db_models import AppUser
     fallback = db.query(AppUser).first()
     if fallback is None:
         fallback = AppUser(
             id=uuid.uuid4(),
-            full_name="Anonymous",
-            password_hash=hashlib.sha256(b"anon").hexdigest(),
+            phone_number="",
+            display_name="Anonymous",
+            is_active=True,
         )
         db.add(fallback)
         db.flush()
     device = Device(
         id=uuid.uuid4(),
-        device_id=device_uid,
+        device_uid=device_uid,
+        platform=platform or "web",
         user_id=fallback.id,
     )
     db.add(device)
@@ -193,26 +147,40 @@ def ensure_device(db: Session, device_uid: str) -> Device:
     return device
 
 
-@router.post("/scans", summary="[EP-01] Tạo lượt quét")
+def _risk_str_to_enum(risk: Optional[str]):
+    if not risk:
+        return RiskLevel.AN_TOAN
+    r = str(risk).upper()
+    if r in ("NGUY_HIEM", "CRITICAL", "HIGH"):
+        return RiskLevel.NGUY_HIEM
+    if r in ("NGHI_NGO", "CANH_BAO", "MEDIUM"):
+        return RiskLevel.NGHI_NGO
+    return RiskLevel.AN_TOAN
+
+
+@router.post("/scans", summary="[EP-01] Tạo lượt quét mới")
 def create_scan(
     payload: CreateScanPayload,
     x_device_uid: str = Header(..., alias="X-Device-Uid", description="Định danh thiết bị"),
+    x_platform: Optional[str] = Header("web", alias="X-Platform", description="web | ios | android"),
     db: Session = Depends(get_db)
 ):
-    device = ensure_device(db, x_device_uid)
+    device = ensure_device(db, x_device_uid, platform=x_platform or "web")
+    raw_content = payload.content.strip()
 
-    raw_content = payload.content
-    content_hash = hashlib.sha256(raw_content.encode("utf-8")).hexdigest()
+    input_type_enum = _to_enum_or_value(InputType, payload.input_type, InputType.TEXT)
 
-    analysis = compute_scan_basic(db, raw_content)
+    pipeline_res = execute_scan_pipeline(raw_content, db)
 
     scan = ScanRequest(
         id=uuid.uuid4(),
+        device_id=device.id,
         user_id=device.user_id,
-        scan_type=payload.input_type,
+        input_type=input_type_enum,
         raw_content=raw_content,
-        content_hash=content_hash,
-        status="completed",
+        normalized_text=pipeline_res.get("normalized_text", raw_content.strip()),
+        status=ScanStatus.COMPLETED,
+        completed_at=datetime.utcnow(),
     )
     db.add(scan)
     db.flush()
@@ -223,54 +191,62 @@ def create_scan(
         db.add(ent)
 
     signals: List[ScanSignal] = []
-    for r in analysis["reasons"]:
-        if r.get("rule_code"):
-            rule = db.query(ScoringRule).filter(ScoringRule.rule_code == r["rule_code"]).first()
-            rule_id = rule.id if rule else None
-            if rule:
-                score_contrib = rule.score_value
-            else:
-                score_contrib = 10
-        else:
-            rule_id = None
-            score_contrib = 10
+    for r in pipeline_res["reasons"]:
+        rule_code = r.get("rule_code")
+        score_val = int(r.get("score") or 0)
+        source_str = (r.get("source") or "RULE").upper()
+        source_enum = _to_enum_or_value(SignalSource, source_str, SignalSource.RULE)
         signals.append(ScanSignal(
             id=uuid.uuid4(),
             scan_request_id=scan.id,
-            rule_id=rule_id,
-            signal_code=r.get("rule_code") or "SIG_CUSTOM",
-            signal_name=r["text"],
-            description=r["text"],
-            score_contribution=score_contrib,
-            evidence=raw_content[:200],
-            severity=analysis["risk_level"],
+            source=source_enum,
+            rule_code=rule_code,
+            score=min(100, max(0, score_val)),
+            reason_text=r.get("text", "Lý do vi phạm"),
+            evidence={"matched_substring": raw_content[:200]},
         ))
     for s in signals:
         db.add(s)
 
+    risk_enum = _risk_str_to_enum(pipeline_res["risk_level"])
+    final_score = int(pipeline_res["final_score"] or 0)
+    rule_score = int(pipeline_res.get("rule_score", final_score))
     result = ScanResult(
         id=uuid.uuid4(),
         scan_request_id=scan.id,
-        total_score=analysis["score"],
-        risk_level=analysis["risk_level"],
-        summary=analysis["recommended_action"],
-        recommended_action=analysis["recommended_action"],
-        is_scam=analysis["risk_level"] == "NGUY_HIEM",
-        confidence=min(1.0, analysis["score"] / 100),
+        risk_level=risk_enum,
+        final_score=min(100, max(0, final_score)),
+        rule_score=min(100, max(0, rule_score)),
+        ai_score=pipeline_res.get("ai_score"),
+        ai_available=bool(pipeline_res.get("ai_available", True)),
+        has_hard_override=False,
+        recommended_action=pipeline_res.get("recommended_action") or "",
     )
     db.add(result)
 
     scan.completed_at = datetime.utcnow()
     db.commit()
 
+    reasons_out = []
+    for r in pipeline_res["reasons"]:
+        reasons_out.append({
+            "source": r.get("source", "RULE"),
+            "text": r.get("text", ""),
+            "rule_code": r.get("rule_code"),
+            "score": int(r.get("score") or 0),
+        })
+
     return {
         "scan_id": str(scan.id),
-        "risk_level": analysis["risk_level"],
-        "final_score": analysis["score"],
-        "reasons": analysis["reasons"],
-        "recommended_action": analysis["recommended_action"],
-        "ai_available": True,
-        "created_at": scan.created_at.isoformat() + "Z" if scan.created_at else None
+        "risk_level": pipeline_res["risk_level"],
+        "final_score": min(100, max(0, final_score)),
+        "rule_score": rule_score,
+        "ai_score": pipeline_res.get("ai_score"),
+        "ai_available": bool(pipeline_res.get("ai_available", True)),
+        "reasons": reasons_out,
+        "recommended_action": pipeline_res["recommended_action"],
+        "created_at": (scan.created_at.isoformat() + "Z") if scan.created_at else None,
+        "completed_at": (scan.completed_at.isoformat() + "Z") if scan.completed_at else None,
     }
 
 
@@ -289,11 +265,6 @@ def get_scan_detail(
     if not scan:
         raise HTTPException(status_code=404, detail="Lượt quét không tồn tại")
 
-    device = ensure_device(db, x_device_uid)
-    if str(scan.user_id) != str(device.user_id):
-        # Allow cross-user if user_id is the anonymous fallback; but enforce a bit: skip strict check for now to make it work for testing
-        pass
-
     result = db.query(ScanResult).filter(ScanResult.scan_request_id == scan.id).first()
     entities = db.query(ScanEntity).filter(ScanEntity.scan_request_id == scan.id).all()
     signals = db.query(ScanSignal).filter(ScanSignal.scan_request_id == scan.id).all()
@@ -301,38 +272,58 @@ def get_scan_detail(
     reasons = []
     for s in signals:
         reasons.append({
-            "source": "RULE" if s.rule_id else "SIGNAL",
-            "text": s.description or s.signal_name,
-            "rule_code": s.signal_code,
+            "source": str(s.source.value) if hasattr(s.source, "value") else str(s.source),
+            "text": s.reason_text or "",
+            "rule_code": s.rule_code,
+            "score": int(s.score or 0),
         })
 
     entities_out = []
     for e in entities:
+        etype = str(e.entity_type.value) if hasattr(e.entity_type, "value") else str(e.entity_type)
+        bl = db.query(BlacklistEntity).filter(
+            BlacklistEntity.entity_type == e.entity_type,
+            BlacklistEntity.normalized_value == e.normalized_value,
+            BlacklistEntity.is_active == True
+        ).first()
         entities_out.append({
-            "entity_type": e.entity_type,
-            "entity_value": e.entity_value,
-            "risk_level": map_risk_level(e.risk_level),
-            "in_blacklist": e.matched_blacklist_id is not None,
+            "entity_type": etype,
+            "raw_value": e.raw_value,
+            "entity_value": e.normalized_value,
+            "risk_level": map_risk_level("high" if bl else None),
+            "in_blacklist": bl is not None,
+            "report_count": (bl.report_count or 1) if bl else 0,
         })
 
     risk = "AN_TOAN"
     score = 0
     action = "Nội dung chưa thấy dấu hiệu lừa đảo nhưng vẫn cần cẩn trọng."
+    rule_score = 0
+    ai_score = None
+    ai_available = True
     if result:
-        risk = result.risk_level or risk
-        score = result.total_score
+        risk = map_risk_level(result.risk_level)
+        score = int(result.final_score or 0)
+        rule_score = int(result.rule_score or 0)
+        ai_score = result.ai_score
+        ai_available = bool(result.ai_available)
         if result.recommended_action:
             action = result.recommended_action
 
     return {
         "scan_id": str(scan.id),
+        "input_type": str(scan.input_type.value) if hasattr(scan.input_type, "value") else str(scan.input_type),
+        "raw_content": scan.raw_content,
         "risk_level": risk,
         "final_score": score,
+        "rule_score": rule_score,
+        "ai_score": ai_score,
+        "ai_available": ai_available,
         "entities": entities_out,
         "reasons": reasons,
         "recommended_action": action,
-        "ai_available": True,
-        "created_at": scan.created_at.isoformat() + "Z" if scan.created_at else None
+        "created_at": (scan.created_at.isoformat() + "Z") if scan.created_at else None,
+        "completed_at": (scan.completed_at.isoformat() + "Z") if scan.completed_at else None,
     }
 
 
@@ -344,15 +335,23 @@ def get_scan_history(
     db: Session = Depends(get_db)
 ):
     device = ensure_device(db, x_device_uid)
+    user_id = device.user_id
+    if user_id is None:
+        user_id = device.id
 
-    query = db.query(ScanRequest).filter(ScanRequest.user_id == device.user_id)
+    query = db.query(ScanRequest).filter(
+        (ScanRequest.device_id == device.id) | (ScanRequest.user_id == user_id)
+    )
 
     if cursor:
-        cursor_created_at, cursor_id = decode_cursor(cursor)
-        query = query.filter(
-            (ScanRequest.created_at < cursor_created_at) |
-            ((ScanRequest.created_at == cursor_created_at) & (ScanRequest.id < cursor_id))
-        )
+        try:
+            cursor_created_at, cursor_id = decode_cursor(cursor)
+            query = query.filter(
+                (ScanRequest.created_at < cursor_created_at) |
+                ((ScanRequest.created_at == cursor_created_at) & (ScanRequest.id < cursor_id))
+            )
+        except Exception:
+            pass
 
     rows = (
         query
@@ -368,7 +367,8 @@ def get_scan_history(
     next_cursor = None
     if has_next and rows:
         last = rows[-1]
-        next_cursor = encode_cursor(last.created_at, last.id)
+        ts = last.created_at or datetime.utcnow()
+        next_cursor = encode_cursor(ts, last.id)
 
     items = []
     for scan in rows:
@@ -376,16 +376,17 @@ def get_scan_history(
         preview = (scan.raw_content or "")[:100]
         risk = "AN_TOAN"
         if result and result.risk_level:
-            risk = result.risk_level
+            risk = map_risk_level(result.risk_level)
         items.append({
             "scan_id": str(scan.id),
-            "input_type": scan.scan_type,
+            "input_type": str(scan.input_type.value) if hasattr(scan.input_type, "value") else str(scan.input_type),
             "preview": preview,
             "risk_level": risk,
-            "created_at": scan.created_at.isoformat() + "Z" if scan.created_at else None
+            "final_score": int(result.final_score or 0) if result else 0,
+            "created_at": (scan.created_at.isoformat() + "Z") if scan.created_at else None,
         })
 
     return {
         "items": items,
-        "next_cursor": next_cursor
+        "next_cursor": next_cursor,
     }

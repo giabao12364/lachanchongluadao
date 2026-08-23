@@ -13,7 +13,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.models.db_models import ScamReport, BlacklistEntity, Device, AppUser
+from app.models.db_models import (
+    ScamReport, BlacklistEntity, Device, AppUser,
+    EntityType, ReportStatus, BlacklistSource,
+)
 
 router = APIRouter()
 
@@ -22,34 +25,36 @@ JWT_ALG = "HS256"
 
 
 class CreateReportPayload(BaseModel):
-    entity_type: str = Field(..., pattern="^(PHONE|URL|BANK_ACCOUNT|OTHER)$")
-    entity_value: str = Field(..., min_length=1)
-    title: Optional[str] = None
-    description: Optional[str] = None
-    scam_type: Optional[str] = None
-    loss_amount: Optional[float] = 0
-    currency: Optional[str] = "VND"
-    evidence_urls: Optional[list] = None
-    contact_info: Optional[str] = None
+    entity_type: str = Field(..., pattern="^(PHONE|URL|BANK_ACCOUNT|EMAIL|OTHER)$")
+    entity_value: str = Field(..., min_length=1, max_length=500)
+    description: Optional[str] = Field(None, max_length=5000)
 
 
 def normalize_value(entity_type: str, value: str) -> str:
+    v = value.strip()
     if entity_type == "PHONE":
-        digits = re.sub(r"\D", "", value)
+        digits = re.sub(r"\D", "", v)
         if digits.startswith("84"):
             return "+" + digits
         if digits.startswith("0"):
             return "+84" + digits[1:]
-        if value.startswith("+"):
-            return value
+        if v.startswith("+"):
+            return v
         return "+84" + digits
-    return value.strip()
+    return v
 
 
-def map_status(s: Optional[str]) -> str:
-    if not s:
+def map_status(s) -> str:
+    if s is None:
         return "PENDING"
-    return s.upper()
+    return str(s).upper()
+
+
+def _to_entity_type(v):
+    try:
+        return EntityType(str(v).upper())
+    except Exception:
+        return EntityType.OTHER
 
 
 def get_user_from_auth_or_device(
@@ -68,25 +73,42 @@ def get_user_from_auth_or_device(
             user_id = None
 
     if user_id is None:
-        device = db.query(Device).filter(Device.device_id == x_device_uid).first()
+        device = db.query(Device).filter(Device.device_uid == x_device_uid).first()
         if device is None:
             fallback = db.query(AppUser).first()
             if fallback is None:
                 fallback = AppUser(
                     id=uuid.uuid4(),
-                    full_name="Anonymous",
-                    password_hash=hashlib.sha256(b"anon").hexdigest(),
+                    phone_number="",
+                    display_name="Anonymous",
+                    is_active=True,
                 )
                 db.add(fallback)
                 db.flush()
             device = Device(
                 id=uuid.uuid4(),
-                device_id=x_device_uid,
+                device_uid=x_device_uid,
+                platform="web",
                 user_id=fallback.id,
             )
             db.add(device)
             db.flush()
-        user_id = device.user_id
+        if device.user_id:
+            user_id = device.user_id
+        else:
+            fallback = db.query(AppUser).first()
+            if fallback is None:
+                fallback = AppUser(
+                    id=uuid.uuid4(),
+                    phone_number="",
+                    display_name="Anonymous",
+                    is_active=True,
+                )
+                db.add(fallback)
+                db.flush()
+            device.user_id = fallback.id
+            db.flush()
+            user_id = fallback.id
     return user_id
 
 
@@ -99,64 +121,59 @@ def create_report(
 ):
     reporter_id = get_user_from_auth_or_device(authorization, x_device_uid, db)
     normalized = normalize_value(payload.entity_type, payload.entity_value)
-
-    title = payload.title or f"Báo cáo {payload.entity_type}: {normalized}"
-    description_parts = []
-    if payload.description:
-        description_parts.append(payload.description)
-    description_parts.append(f"Entity: {payload.entity_type} - {normalized}")
-    description = "\n".join(description_parts)
-
-    scam_type = payload.scam_type or payload.entity_type.lower()
-    try:
-        evidence_json = json.dumps(payload.evidence_urls) if payload.evidence_urls else None
-    except Exception:
-        evidence_json = None
+    entity_type_enum = _to_entity_type(payload.entity_type)
 
     report = ScamReport(
         id=uuid.uuid4(),
-        reporter_id=reporter_id,
-        title=title,
-        description=description,
-        scam_type=scam_type,
-        loss_amount=payload.loss_amount or 0,
-        currency=payload.currency or "VND",
-        evidence_urls=payload.evidence_urls if isinstance(payload.evidence_urls, list) else None,
-        contact_info=payload.contact_info,
-        status="pending",
-        reported_at=datetime.utcnow(),
+        user_id=reporter_id,
+        entity_type=entity_type_enum,
+        normalized_value=normalized,
+        description=payload.description,
+        status=ReportStatus.PENDING,
     )
-    db.add(report)
+    try:
+        db.add(report)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        msg = str(exc).lower()
+        if "uq_scam_report_user_entity_value" in msg or "unique" in msg:
+            raise HTTPException(status_code=409, detail="Bạn đã báo cáo nội dung này trước đó.")
+        raise HTTPException(status_code=400, detail=f"Không thể lưu báo cáo: {exc}")
 
-    # Đồng bộ thêm vào BlacklistEntity để cộng report_count (nếu entity_type hỗ trợ)
     if payload.entity_type in ("PHONE", "URL", "BANK_ACCOUNT"):
         bl = db.query(BlacklistEntity).filter(
-            BlacklistEntity.entity_type == payload.entity_type,
-            BlacklistEntity.entity_value == normalized,
+            BlacklistEntity.entity_type == entity_type_enum,
+            BlacklistEntity.normalized_value == normalized,
         ).first()
         if bl is None:
             bl = BlacklistEntity(
                 id=uuid.uuid4(),
-                entity_type=payload.entity_type,
-                entity_value=normalized,
-                source="USER_REPORT",
-                risk_level="high",
-                is_active=False,
+                entity_type=entity_type_enum,
+                normalized_value=normalized,
+                source=BlacklistSource.USER_REPORT,
+                confidence=50,
                 report_count=1,
-                description=f"Được báo cáo lần đầu qua report #{report.id}",
+                is_active=False,
+                note=f"Báo cáo lần đầu qua report #{report.id}",
             )
             db.add(bl)
         else:
             bl.report_count = (bl.report_count or 0) + 1
-            if (bl.report_count or 0) >= 3 and not bl.is_active:
+            if (bl.report_count >= 3) and not bl.is_active:
                 bl.is_active = True
-
-    db.commit()
+                bl.confidence = 70
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
 
     return {
         "report_id": str(report.id),
-        "status": "PENDING",
-        "message": "Gửi báo cáo thành công. Cảm ơn đóng góp của bạn!"
+        "entity_type": str(report.entity_type.value) if hasattr(report.entity_type, "value") else str(report.entity_type),
+        "normalized_value": report.normalized_value,
+        "status": map_status(report.status),
+        "message": "Gửi báo cáo thành công. Cảm ơn đóng góp của bạn! (Đủ 3 report độc lập sẽ auto-active vào blacklist)"
     }
 
 
@@ -174,25 +191,6 @@ def decode_cursor(cursor: str):
         raise HTTPException(status_code=400, detail="Cursor không hợp lệ")
 
 
-def extract_entity_from_report(report: ScamReport) -> tuple[str, str]:
-    entity_type = "OTHER"
-    normalized_value = report.title
-    scam = (report.scam_type or "").upper()
-    if scam in ("PHONE", "URL", "BANK_ACCOUNT"):
-        entity_type = scam
-    if report.description and "Entity: " in report.description:
-        try:
-            line = [l for l in report.description.splitlines() if l.startswith("Entity: ")][0]
-            rest = line[len("Entity: "):]
-            if " - " in rest:
-                t, v = rest.split(" - ", 1)
-                entity_type = t
-                normalized_value = v
-        except Exception:
-            pass
-    return entity_type, normalized_value
-
-
 @router.get("/reports", summary="[EP-09] Danh sách báo cáo của tôi (Auth Required)")
 def get_my_reports(
     limit: int = Query(20, le=50),
@@ -203,18 +201,18 @@ def get_my_reports(
 ):
     user_id = get_user_from_auth_or_device(authorization, x_device_uid, db)
 
-    query = db.query(ScamReport).filter(ScamReport.reporter_id == user_id)
+    query = db.query(ScamReport).filter(ScamReport.user_id == user_id)
 
     if cursor:
         cursor_created_at, cursor_id = decode_cursor(cursor)
         query = query.filter(
-            (ScamReport.reported_at < cursor_created_at) |
-            ((ScamReport.reported_at == cursor_created_at) & (ScamReport.id < cursor_id))
+            (ScamReport.created_at < cursor_created_at) |
+            ((ScamReport.created_at == cursor_created_at) & (ScamReport.id < cursor_id))
         )
 
     rows = (
         query
-        .order_by(ScamReport.reported_at.desc(), ScamReport.id.desc())
+        .order_by(ScamReport.created_at.desc(), ScamReport.id.desc())
         .limit(limit + 1)
         .all()
     )
@@ -226,22 +224,23 @@ def get_my_reports(
     next_cursor = None
     if has_next and rows:
         last = rows[-1]
-        ts = last.reported_at if last.reported_at else last.reviewed_at or datetime.utcnow()
+        ts = last.created_at or datetime.utcnow()
         next_cursor = encode_cursor(ts, last.id)
 
     items = []
     for r in rows:
-        entity_type, normalized_value = extract_entity_from_report(r)
-        ts = r.reported_at if r.reported_at else datetime.utcnow()
+        etype = str(r.entity_type.value) if hasattr(r.entity_type, "value") else str(r.entity_type)
+        ts = r.created_at or datetime.utcnow()
         items.append({
             "report_id": str(r.id),
-            "entity_type": entity_type,
-            "normalized_value": normalized_value,
+            "entity_type": etype,
+            "normalized_value": r.normalized_value,
             "status": map_status(r.status),
+            "description": r.description or "",
             "created_at": ts.isoformat() + "Z",
         })
 
     return {
         "items": items,
-        "next_cursor": next_cursor
+        "next_cursor": next_cursor,
     }

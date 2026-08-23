@@ -4,13 +4,14 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Any
 
-from fastapi import APIRouter, Header, Path, Depends
+from fastapi import APIRouter, Header, Path, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.db_models import (
-    BlacklistEntity, ScanRequest, ScanResult, ScanEntity, ScoringRule, Device, AppUser
+    BlacklistEntity, ScanRequest, ScanResult, ScanEntity, Device, AppUser,
+    EntityType, RiskLevel, ScanStatus, InputType,
 )
 
 router = APIRouter()
@@ -54,23 +55,23 @@ def detect_carrier(phone: str) -> str:
 
 
 def ensure_device(db: Session, device_uid: str) -> Device:
-    device = db.query(Device).filter(Device.device_id == device_uid).first()
+    device = db.query(Device).filter(Device.device_uid == device_uid).first()
     if device:
         return device
     fallback = db.query(AppUser).first()
     if fallback is None:
         fallback = AppUser(
             id=uuid.uuid4(),
-            full_name="Anonymous",
-            password_hash=hashlib.sha256(b"anon").hexdigest(),
-            phone_number=None,
-            email=None,
+            phone_number="",
+            display_name="Anonymous",
+            is_active=True,
         )
         db.add(fallback)
         db.flush()
     device = Device(
         id=uuid.uuid4(),
-        device_id=device_uid,
+        device_uid=device_uid,
+        platform="web",
         user_id=fallback.id,
     )
     db.add(device)
@@ -80,7 +81,7 @@ def ensure_device(db: Session, device_uid: str) -> Device:
 
 @router.get("/phones/{phone}", summary="[EP-04] Tra cứu số điện thoại")
 def lookup_phone(
-    phone: str = Path(..., description="Số điện thoại định dạng E.164"),
+    phone: str = Path(..., description="Số điện thoại định dạng E.164 hoặc bất kỳ"),
     x_device_uid: str = Header(..., alias="X-Device-Uid"),
     db: Session = Depends(get_db)
 ):
@@ -88,36 +89,36 @@ def lookup_phone(
     carrier = detect_carrier(normalized)
 
     bl_entry = db.query(BlacklistEntity).filter(
-        BlacklistEntity.entity_type == "PHONE",
-        BlacklistEntity.entity_value == normalized,
-        BlacklistEntity.is_active == True
+        BlacklistEntity.entity_type == EntityType.PHONE,
+        BlacklistEntity.normalized_value == normalized,
+        BlacklistEntity.is_active == True,
     ).first()
 
     device = ensure_device(db, x_device_uid)
 
     reasons: List[Dict[str, Any]] = []
-    risk_level = "AN_TOAN"
+    risk_level_str = "AN_TOAN"
     action = "Số điện thoại chưa có trong danh sách đen, nhưng vẫn cần cẩn trọng khi giao dịch."
 
     if bl_entry:
-        risk_level = "NGUY_HIEM" if (bl_entry.risk_level or "high").lower() in ("high", "critical") else "CANH_BAO"
+        risk_level_str = "NGUY_HIEM" if (bl_entry.confidence or 0) >= 70 else "CANH_BAO"
+        rc = bl_entry.report_count or 1
         reasons.append({
             "source": "BLACKLIST",
-            "text": f"Số điện thoại nằm trong danh sách đen lừa đảo. Số báo cáo: {bl_entry.report_count or 0}."
+            "text": f"Số điện thoại nằm trong danh sách đen lừa đảo. Số báo cáo: {rc}. Mức độ tin cậy: {bl_entry.confidence or 0}%.",
         })
-        if bl_entry.description:
-            reasons.append({"source": "BLACKLIST", "text": bl_entry.description})
+        if bl_entry.note:
+            reasons.append({"source": "BLACKLIST", "text": bl_entry.note})
         action = "Cảnh báo! Số điện thoại này đã bị nhiều người báo cáo lừa đảo. Tuyệt đối không chuyển tiền."
 
-    # Tạo record scan để tracking lịch sử
-    content_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     scan = ScanRequest(
         id=uuid.uuid4(),
+        device_id=device.id,
         user_id=device.user_id,
-        scan_type="PHONE",
+        input_type=InputType.PHONE,
         raw_content=normalized,
-        content_hash=content_hash,
-        status="completed",
+        normalized_text=normalized,
+        status=ScanStatus.COMPLETED,
         completed_at=datetime.utcnow(),
     )
     db.add(scan)
@@ -126,22 +127,24 @@ def lookup_phone(
     scan_entity = ScanEntity(
         id=uuid.uuid4(),
         scan_request_id=scan.id,
-        entity_type="PHONE",
-        entity_value=normalized,
-        risk_level=bl_entry.risk_level if bl_entry else "low",
-        matched_blacklist_id=bl_entry.id if bl_entry else None,
+        entity_type=EntityType.PHONE,
+        raw_value=normalized,
+        normalized_value=normalized,
     )
     db.add(scan_entity)
 
+    final_score = 100 if bl_entry else 0
+    risk_enum = RiskLevel.NGUY_HIEM if bl_entry else RiskLevel.AN_TOAN
     db.add(ScanResult(
         id=uuid.uuid4(),
         scan_request_id=scan.id,
-        total_score=100 if bl_entry else 0,
-        risk_level=risk_level,
-        summary=action,
+        risk_level=risk_enum,
+        final_score=final_score,
+        rule_score=final_score,
+        ai_score=None,
+        ai_available=True,
+        has_hard_override=False,
         recommended_action=action,
-        is_scam=bl_entry is not None,
-        confidence=0.95 if bl_entry else 0.1,
     ))
     db.commit()
 
@@ -149,7 +152,8 @@ def lookup_phone(
         "scan_id": str(scan.id),
         "phone": normalized,
         "carrier": carrier,
-        "risk_level": risk_level,
+        "risk_level": risk_level_str,
+        "final_score": final_score,
         "reasons": reasons,
-        "recommended_action": action
+        "recommended_action": action,
     }
