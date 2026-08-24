@@ -46,7 +46,7 @@ def map_risk_level(level) -> str:
     if s in ("HIGH", "CRITICAL", "NGUY_HIEM"):
         return "NGUY_HIEM"
     if s in ("MEDIUM", "CANH_BAO", "NGHI_NGO"):
-        return "CANH_BAO"
+        return "NGHI_NGO"
     return "AN_TOAN"
 
 
@@ -126,21 +126,11 @@ def ensure_device(db: Session, device_uid: str, platform: str = "web") -> Device
     device = db.query(Device).filter(Device.device_uid == device_uid).first()
     if device:
         return device
-    fallback = db.query(AppUser).first()
-    if fallback is None:
-        fallback = AppUser(
-            id=uuid.uuid4(),
-            phone_number="",
-            display_name="Anonymous",
-            is_active=True,
-        )
-        db.add(fallback)
-        db.flush()
     device = Device(
         id=uuid.uuid4(),
         device_uid=device_uid,
         platform=platform or "web",
-        user_id=fallback.id,
+        user_id=None,
     )
     db.add(device)
     db.flush()
