@@ -20,6 +20,72 @@ services:
     restart: unless-stopped
     ports:
       - "6379:6379"
-
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lachan_fastapi
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - DATABASE_URL=postgresql+asyncpg://lachan_user:lachan_pass@db:5432/lachan_db
+      - DATABASE_URL_SYNC=postgresql+psycopg2://lachan_user:lachan_pass@db:5432/lachan_db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        echo "=========================================="
+        echo "[entrypoint-inline] Lachan FastAPI starting (Docker Compose inline)..."
+        echo "=========================================="
+        echo "[entrypoint] PYTHONPATH=$PYTHONPATH"
+        echo "[entrypoint] Waiting PostgreSQL (db:5432) up to 60s..."
+        for i in $$(seq 1 60); do
+          if (echo > /dev/tcp/db/5432) >/dev/null 2>&1; then
+            echo "[entrypoint] PostgreSQL IS UP after $$i tries."
+            break
+          fi
+          if [ "$$i" = "60" ]; then
+            echo "[entrypoint][FATAL] PostgreSQL not available after 60s. Exit 1."
+            exit 1
+          fi
+          echo "[entrypoint]   wait DB... $$i/60"
+          sleep 1
+        done
+        echo "[entrypoint] Waiting Redis (redis:6379) up to 20s..."
+        for i in $$(seq 1 20); do
+          if (echo > /dev/tcp/redis/6379) >/dev/null 2>&1; then
+            echo "[entrypoint] Redis IS UP after $$i tries."
+            break
+          fi
+          if [ "$$i" = "20" ]; then
+            echo "[entrypoint][WARN] Redis not reachable after 20s, continue anyway..."
+            break
+          fi
+          echo "[entrypoint]   wait Redis... $$i/20"
+          sleep 1
+        done
+        echo "[entrypoint] Running /app/init_db.py (schema + seed BR-01-1/1b/3/6/7/10)..."
+        python /app/init_db.py || echo "[entrypoint][WARN] init_db.py returned non-zero; continuing startup anyway."
+        echo ""
+        echo "=========================================="
+        echo "[entrypoint] Starting Uvicorn on 0.0.0.0:8000"
+        echo "           Swagger UI:   http://127.0.0.1:8000/docs"
+        echo "           Health check: http://127.0.0.1:8000/"
+        echo "=========================================="
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --log-level info
 volumes:
   lachan_pgdata:

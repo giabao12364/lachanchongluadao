@@ -175,27 +175,53 @@ def create_scan(
     db.add(scan)
     db.flush()
 
-    entities = extract_entities(db, raw_content, payload.input_type)
-    for ent in entities:
-        ent.scan_request_id = scan.id
-        db.add(ent)
+    pipe_entities = list(pipeline_res.get("extracted_entities") or [])
+    if pipe_entities:
+        for ent in pipe_entities:
+            et = _to_enum_or_value(EntityType, str(ent.get("entity_type")).upper())
+            if et is None:
+                continue
+            db_ent = ScanEntity(
+                id=uuid.uuid4(),
+                scan_request_id=scan.id,
+                entity_type=et,
+                raw_value=str(ent.get("raw_value") or "")[:500],
+                normalized_value=str(ent.get("normalized_value") or "")[:500],
+                created_at=datetime.utcnow(),
+            )
+            db.add(db_ent)
+    else:
+        legacy = extract_entities(db, raw_content, payload.input_type)
+        for ent in legacy:
+            ent.scan_request_id = scan.id
+            db.add(ent)
 
-    signals: List[ScanSignal] = []
-    for r in pipeline_res["reasons"]:
-        rule_code = r.get("rule_code")
-        score_val = int(r.get("score") or 0)
-        source_str = (r.get("source") or "RULE").upper()
-        source_enum = _to_enum_or_value(SignalSource, source_str, SignalSource.RULE)
-        signals.append(ScanSignal(
+    db_signals: List[ScanSignal] = []
+    pipe_signals = list(pipeline_res.get("signals") or [])
+    for sig in pipe_signals:
+        rule_code = sig.get("rule_code")
+        score_val = int(sig.get("score") or 0)
+        source_str = (sig.get("source") or "RULE").upper()
+        if source_str == "SYSTEM":
+            source_enum = SignalSource.RULE
+        else:
+            source_enum = _to_enum_or_value(SignalSource, source_str, SignalSource.RULE)
+        if source_enum == SignalSource.RULE and rule_code is None and source_str != "SYSTEM":
+            rule_code = rule_code
+        evidence = sig.get("evidence")
+        if evidence is None:
+            evidence = {"matched_substring": raw_content[:200]}
+        reason_text = sig.get("reason_text") or "Lý do vi phạm"
+        db_signals.append(ScanSignal(
             id=uuid.uuid4(),
             scan_request_id=scan.id,
             source=source_enum,
             rule_code=rule_code,
             score=min(100, max(0, score_val)),
-            reason_text=r.get("text", "Lý do vi phạm"),
-            evidence={"matched_substring": raw_content[:200]},
+            reason_text=reason_text,
+            evidence=evidence,
         ))
-    for s in signals:
+    for s in db_signals:
         db.add(s)
 
     risk_enum = _risk_str_to_enum(pipeline_res["risk_level"])
@@ -208,8 +234,8 @@ def create_scan(
         final_score=min(100, max(0, final_score)),
         rule_score=min(100, max(0, rule_score)),
         ai_score=pipeline_res.get("ai_score"),
-        ai_available=bool(pipeline_res.get("ai_available", True)),
-        has_hard_override=False,
+        ai_available=bool(pipeline_res.get("ai_available", False)),
+        has_hard_override=bool(pipeline_res.get("has_hard_override", False)),
         recommended_action=pipeline_res.get("recommended_action") or "",
     )
     db.add(result)
@@ -218,12 +244,13 @@ def create_scan(
     db.commit()
 
     reasons_out = []
-    for r in pipeline_res["reasons"]:
+    for sig in pipe_signals:
         reasons_out.append({
-            "source": r.get("source", "RULE"),
-            "text": r.get("text", ""),
-            "rule_code": r.get("rule_code"),
-            "score": int(r.get("score") or 0),
+            "source": sig.get("source", "RULE"),
+            "text": sig.get("reason_text", ""),
+            "rule_code": sig.get("rule_code"),
+            "score": int(sig.get("score") or 0),
+            "evidence": sig.get("evidence"),
         })
 
     return {
@@ -232,7 +259,9 @@ def create_scan(
         "final_score": min(100, max(0, final_score)),
         "rule_score": rule_score,
         "ai_score": pipeline_res.get("ai_score"),
-        "ai_available": bool(pipeline_res.get("ai_available", True)),
+        "ai_available": bool(pipeline_res.get("ai_available", False)),
+        "has_hard_override": bool(pipeline_res.get("has_hard_override", False)),
+        "extracted_entities": pipe_entities,
         "reasons": reasons_out,
         "recommended_action": pipeline_res["recommended_action"],
         "created_at": (scan.created_at.isoformat() + "Z") if scan.created_at else None,
