@@ -1,26 +1,21 @@
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Import các Routers tương ứng với mã EP trong tài liệu API Contracts
 from app.api.v1 import (
-    scans,       # EP-01, EP-02, EP-03
-    phones,      # EP-04
-    patterns,    # EP-05, EP-10
-    reports,     # EP-06, EP-09
-    auth,        # EP-07, EP-08
-    users        # EP-11
+    scans,       # FR-06: EP-03 Lịch sử quét (chỉ giữ GET /scans, xóa EP-01/EP-02 bên trong)
+    patterns,    # FR-03: EP-05 Danh sách mẫu + EP-10 Chi tiết mẫu cảnh báo
 )
 
 app = FastAPI(
     title="Lá Chắn Chống Lừa Đảo API",
-    description="Hệ thống API backend theo chuẩn Master Build-Spec v2.0",
-    version="2.0.0",
+    description=("Backend chỉ giữ lại FR-03 (Mẫu cảnh báo: GET /scam-patterns, /scam-patterns/{id}) "
+                 "và FR-06 (Lịch sử quét: GET /scans). Đã loại bỏ FR-01/FR-02/FR-04/FR-05."),
+    version="2.1.0-minimal",
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_url="/openapi.json"
+    openapi_url="/openapi.json",
 )
 
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,15 +24,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Khai báo các Routers gắn liền với Mã Endpoint (EP) trong Specs
-app.include_router(scans.router, prefix="/api/v1", tags=["FR-01 & FR-06: Quét & Lịch sử (EP-01, EP-02, EP-03)"])
-app.include_router(phones.router, prefix="/api/v1", tags=["FR-02: Tra cứu SĐT (EP-04)"])
-app.include_router(patterns.router, prefix="/api/v1", tags=["FR-03: Mẫu cảnh báo (EP-05, EP-10)"])
-app.include_router(reports.router, prefix="/api/v1", tags=["FR-04: Báo cáo lừa đảo (EP-06, EP-09)"])
-app.include_router(auth.router, prefix="/api/v1", tags=["FR-05: Xác thực OTP (EP-07, EP-08)"])
-app.include_router(users.router, prefix="/api/v1", tags=["FR-05: Thông tin cá nhân (EP-11)"])
+app.include_router(
+    scans.router,
+    prefix="/api/v1",
+    tags=["FR-06: Lịch sử quét (EP-03 — GET /scans, GET /scans/{id} chi tiết)"],
+)
+app.include_router(
+    patterns.router,
+    prefix="/api/v1",
+    tags=["FR-03: Mẫu cảnh báo (EP-05 — GET /scam-patterns, EP-10 — GET /scam-patterns/{id})"],
+)
 
 
 @app.get("/", tags=["Health Check"])
 def health_check():
-    return {"status": "ok", "app": "Lá Chắn Chống Lừa Đảo Backend"}
+    return {
+        "status": "ok",
+        "app": "Lá Chắn Chống Lừa Đảo Backend",
+        "kept_features": ["FR-03: Scam Patterns (EP-05, EP-10)", "FR-06: Scan History (EP-03)"],
+        "removed_features": ["FR-01 Scan (EP-01, EP-02)", "FR-02 Phone Lookup (EP-04)",
+                             "FR-04 Reports (EP-06 POST, EP-09)", "FR-05 Auth + Me (EP-07, EP-08, EP-11)"],
+    }

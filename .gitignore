@@ -4,3 +4,5 @@ __pycache__/
 venv/
 SETUP_of_mine.md
 backend/.env
+backend/RUN_THIS_FIX.cmd
+backend/FIX_RULE_ENGINE_SEED_TEST.cmd
