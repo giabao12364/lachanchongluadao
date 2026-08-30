@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.services.rule_engine import run_rule_engine
 from app.services.scan.extractor import extract_entities
+from app.services.scan.blacklist_checker import check_entities_against_blacklist  
 from app.models.db_models import AppConfig
 
 
@@ -14,6 +15,8 @@ _THRESHOLD_CACHE: dict[str, Any] = {
     "max_final_score": 100,
 }
 _THRESHOLD_TTL_SEC = 60
+
+_RISK_RANK = {"AN_TOAN": 0, "NGHI_NGO": 1, "NGUY_HIEM": 2}
 
 
 def _load_thresholds(db: Session) -> dict[str, Any]:
@@ -59,6 +62,7 @@ def _call_ai_stub(normalized_text: str) -> Optional[int]:
     try:
         import json
         import urllib.request
+        import urllib.error
         payload = json.dumps({
             "model": model,
             "temperature": 0,
@@ -69,15 +73,10 @@ def _call_ai_stub(normalized_text: str) -> Optional[int]:
             ],
         }).encode("utf-8")
         req = urllib.request.Request(
-            endpoint,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {key}",
-            },
+            endpoint, data=payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
             method="POST",
         )
-        import urllib.error
         try:
             with urllib.request.urlopen(req, timeout=3) as resp:
                 body = resp.read().decode("utf-8", errors="ignore")
@@ -86,29 +85,26 @@ def _call_ai_stub(normalized_text: str) -> Optional[int]:
         except Exception:
             return None
         data = json.loads(body)
-        score_str = None
+        score_val = None
         if isinstance(data, dict) and "score" in data and isinstance(data["score"], (int, float)):
-            score_str = data["score"]
+            score_val = data["score"]
         elif isinstance(data, dict) and "choices" in data:
             try:
                 content = data["choices"][0]["message"]["content"]
-                first = content.strip()
-                if first.startswith("```"):
-                    first = first.strip("`")
-                    if first.lower().startswith("json"):
-                        first = first[4:].strip()
+                first = content.strip().strip("`")
+                if first.lower().startswith("json"):
+                    first = first[4:].strip()
                 sub = json.loads(first)
                 if isinstance(sub, dict) and "score" in sub:
-                    score_str = sub["score"]
+                    score_val = sub["score"]
             except Exception:
                 import re
                 m = re.search(r"\"score\"\s*:\s*(\d{1,3})", content or body)
                 if m:
-                    score_str = int(m.group(1))
-        if score_str is None:
+                    score_val = int(m.group(1))
+        if score_val is None:
             return None
-        s = int(score_str)
-        return max(0, min(100, s))
+        return max(0, min(100, int(score_val)))
     except Exception:
         return None
 
@@ -132,11 +128,7 @@ def _resolve_risk(score: int, t: dict[str, Any]) -> tuple[str, str]:
     )
 
 
-def _build_signals(
-    rule_reasons: list[dict[str, Any]],
-    ai_score: Optional[int],
-    ai_weight: float,
-) -> list[dict[str, Any]]:
+def _build_signals(rule_reasons: list[dict[str, Any]], ai_score: Optional[int], ai_weight: float) -> list[dict[str, Any]]:
     signals: list[dict[str, Any]] = []
     for r in rule_reasons:
         signals.append({
@@ -170,21 +162,27 @@ def execute_scan_pipeline(raw_content: str, db: Session) -> dict[str, Any]:
 
     entities = extract_entities(normalized_text)
 
+
+    blacklist_signals = check_entities_against_blacklist(db, entities)
+    has_hard_override = any(s.has_hard_override for s in blacklist_signals if s.matched)
+    blacklist_floor = "AN_TOAN"
+    if has_hard_override:
+        blacklist_floor = "NGUY_HIEM"
+    elif any(s.matched and s.capped_risk_level == "NGHI_NGO" for s in blacklist_signals):
+        blacklist_floor = "NGHI_NGO"
+
     rule_res = run_rule_engine(normalized_text, db)
     rule_score = _clamp(int(rule_res.get("rule_score") or 0), 0, cap)
     rule_reasons = list(rule_res.get("reasons") or [])
 
     ai_score: Optional[int] = None
-    ai_available_config = _ai_api_key_available()
     ai_call_ok = False
-    if ai_available_config:
+    if _ai_api_key_available():
         ai_score = _call_ai_stub(normalized_text)
         ai_call_ok = ai_score is not None
     ai_available = ai_call_ok
 
-    ai_contrib = 0
-    if ai_score is not None:
-        ai_contrib = int(float(ai_score) * ai_weight)
+    ai_contrib = int(float(ai_score) * ai_weight) if ai_score is not None else 0
     final_score = _clamp(rule_score + ai_contrib, 0, cap)
 
     if (not ai_available) and rule_score > 0 and final_score < nghi_ngo_thr:
@@ -192,41 +190,44 @@ def execute_scan_pipeline(raw_content: str, db: Session) -> dict[str, Any]:
 
     risk_level, recommended_action = _resolve_risk(final_score, thresholds)
 
-    if risk_level == "AN_TOAN":
-        any_signal = bool(rule_reasons) or (ai_score is not None and ai_score >= nghi_ngo_thr)
-        if not any_signal:
-            recommended_action = (
-                "Không phát hiện dấu hiệu lừa đảo phổ biến. "
-                "Vẫn nên thận trọng nếu có yêu cầu chuyển tiền, bấm link lạ, chia sẻ OTP hoặc thông tin tài khoản."
-            )
+
+    if _RISK_RANK[blacklist_floor] > _RISK_RANK[risk_level]:
+        risk_level = blacklist_floor
+        ref_score = thresholds["nguy_hiem"] if risk_level == "NGUY_HIEM" else thresholds["nghi_ngo"]
+        _, recommended_action = _resolve_risk(ref_score, thresholds)
 
     if (not ai_available) and risk_level != "NGUY_HIEM":
         suffix = " Hiện chưa phân tích sâu được nội dung, hãy thận trọng."
         if suffix.strip() not in recommended_action:
-            recommended_action = recommended_action + suffix
+            recommended_action += suffix
 
     signals = _build_signals(rule_reasons, ai_score, ai_weight)
+    for s in blacklist_signals:
+        if s.matched and s.reason_text:
+            signals.insert(0, {
+                "source": "BLACKLIST",
+                "rule_code": None,
+                "score": None,
+                "reason_text": s.reason_text,
+                "evidence": {
+                    "entity_type": s.entity.entity_type.value,
+                    "normalized_value": s.entity.normalized_value,
+                    "confidence": s.confidence,
+                    "blacklist_source": s.source.value if s.source else None,
+                },
+            })
 
     if risk_level == "AN_TOAN" and not signals:
         signals.append({
-            "source": "SYSTEM",
-            "rule_code": None,
-            "score": 0,
-            "reason_text": (
-                "Không phát hiện dấu hiệu lừa đảo phổ biến. "
-                "Vẫn nên thận trọng nếu có yêu cầu chuyển tiền hoặc chia sẻ thông tin tài khoản/OTP."
-            ),
+            "source": "SYSTEM", "rule_code": None, "score": 0,
+            "reason_text": "Không phát hiện dấu hiệu lừa đảo phổ biến. Vẫn nên thận trọng nếu có yêu cầu chuyển tiền hoặc chia sẻ thông tin tài khoản/OTP.",
             "evidence": None,
         })
 
     return {
         "normalized_text": normalized_text,
         "extracted_entities": [
-            {
-                "entity_type": e.entity_type.value,
-                "raw_value": e.raw_value,
-                "normalized_value": e.normalized_value,
-            }
+            {"entity_type": e.entity_type.value, "raw_value": e.raw_value, "normalized_value": e.normalized_value}
             for e in entities
         ],
         "rule_score": rule_score,
@@ -237,5 +238,5 @@ def execute_scan_pipeline(raw_content: str, db: Session) -> dict[str, Any]:
         "reasons": [s["reason_text"] for s in signals],
         "recommended_action": recommended_action,
         "ai_available": ai_available,
-        "has_hard_override": False,
+        "has_hard_override": has_hard_override,
     }
