@@ -179,27 +179,35 @@ try:
     db.commit()
     print(f"     ✅ Đã xóa + tạo lại {len(default_rules)} ScoringRule theo đúng BR-01-10.")
 
-    print("[3/4] Seed AppConfig ngưỡng mặc định (nếu chưa có) - L0.3 mục 7 cấm hardcode:")
+    print("[3/5] Seed AppConfig ngưỡng theo BR-01-3 (UPSERT - cập nhật nếu đã có) - L0.3 cấm hardcode:")
     thresholds = [
-        ("threshold.nghi_ngo", "40", "int", "Ngưỡng tối thiểu để xếp mức Nghi ngờ (default 40)"),
-        ("threshold.nguy_hiem", "80", "int", "Ngưỡng tối thiểu để xếp mức Nguy hiểm (default 80)"),
-        ("pipeline.ai_weight", "0.6", "float", "Hệ số nhân điểm AI khi kết hợp với rule score (default 0.6)"),
-        ("pipeline.max_final_score", "100", "int", "Trần điểm cuối cùng (default 100)"),
-        ("report.auto_blacklist_reports", "3", "int", "Số report độc lập đủ để auto-active blacklist (DD-06)"),
-        ("report.auto_blacklist_confidence", "70", "int", "Confidence gán khi auto-active blacklist (DD-06)"),
+        ("threshold.nghi_ngo", "30", "int", "BR-01-3: Ngưỡng tối thiểu xếp mức NGHI_NGO (0-29 AN_TOAN, 30-69 NGHI_NGO)"),
+        ("threshold.nguy_hiem", "70", "int", "BR-01-3: Ngưỡng tối thiểu xếp mức NGUY_HIEM (70-100 NGUY_HIEM)"),
+        ("pipeline.ai_weight", "0.6", "float", "BR-01-10: Hệ số nhân điểm AI khi kết hợp rule (0.6)"),
+        ("pipeline.max_final_score", "100", "int", "BR-01-10: Trần điểm cuối cùng (cap 100)"),
+        ("report.auto_blacklist_reports", "3", "int", "DD-06: Số report độc lập đủ để auto-active blacklist"),
+        ("report.auto_blacklist_confidence", "70", "int", "DD-06: Confidence gán khi auto-active từ community"),
+        ("blacklist.hard_override_confidence", "90", "int", "BR-01-1: Confidence tối thiểu để chốt chặn cứng NGUY_HIEM (default 90)"),
         ("otp.expire_minutes", "5", "int", "Thời gian hết hạn OTP (phút)"),
         ("otp.max_attempts", "5", "int", "Số lần thử OTP tối đa trước khi vô hiệu hóa"),
     ]
-    seeded_cfg = 0
+    upsert_cfg = 0
+    update_cfg = 0
     for k, v, vt, desc in thresholds:
         exist = db.query(AppConfig).filter(AppConfig.key == k).first()
         if exist is None:
             db.add(AppConfig(key=k, value=v, value_type=vt))
-            seeded_cfg += 1
+            upsert_cfg += 1
+        else:
+            if exist.value != v or exist.value_type != vt:
+                exist.value = v
+                exist.value_type = vt
+                exist.updated_at = datetime.utcnow()
+                update_cfg += 1
     db.commit()
-    print(f"     ✅ Đã seed {seeded_cfg} AppConfig ngưỡng (bỏ qua {len(thresholds)-seeded_cfg} key đã tồn tại).")
+    print(f"     ✅ Thêm mới {upsert_cfg} key, cập nhật {update_cfg} key AppConfig ngưỡng BR-01-3.")
 
-    print("[4/4] Seed ScamPattern mẫu mới từ app/db/seed_scam_patterns.py (FR-03)...")
+    print("[4/5] Seed ScamPattern mẫu mới từ app/db/seed_scam_patterns.py (FR-03)...")
     from app.models.db_models import ScamPattern
     count_old = db.query(ScamPattern).count()
     if count_old > 0:
@@ -212,8 +220,38 @@ try:
     count_new = db.query(ScamPattern).count()
     print(f"     ✅ Tổng ScamPattern trong DB sau seed: {count_new} (mong đợi 10 mẫu đủ 3 khối, is_active=True)")
 
+    print("[5/5] Seed BlacklistEntity mẫu test (BR-01-1 hard override, BR-01-1b community)...")
+    from app.models.db_models import BlacklistEntity, EntityType, BlacklistSource
+    bl_samples_raw = [
+        (EntityType.DOMAIN, "vietcombank-vn.top", BlacklistSource.PUBLIC_FEED, 100, 1, True,
+         "URL giả mạo Vietcombank đã được feed xác nhận lừa đảo (ví dụ BR-01-1)"),
+        (EntityType.PHONE, "+84912345678", BlacklistSource.COMMUNITY, 70, 3, True,
+         "SĐT vừa bị 3 người dùng báo cáo độc lập = auto-active confidence=70 (BR-01-1b, DD-06)"),
+        (EntityType.DOMAIN, "phishing-sample.xyz", BlacklistSource.MANUAL, 95, 1, True,
+         "Trang lừa đảo thủ công đánh dấu để test pipeline rule engine"),
+    ]
+    added_bl = 0
+    for et, val, src, conf, rc, ia, note in bl_samples_raw:
+        exist = (
+            db.query(BlacklistEntity)
+            .filter(BlacklistEntity.entity_type == et, BlacklistEntity.normalized_value == val)
+            .first()
+        )
+        if exist is None:
+            db.add(BlacklistEntity(
+                id=uuid.uuid4(), entity_type=et, normalized_value=val,
+                source=src, confidence=conf, report_count=rc,
+                is_active=ia, note=note,
+                created_at=datetime.utcnow(), updated_at=datetime.utcnow(),
+            ))
+            added_bl += 1
+    db.commit()
+    print(f"     ✅ Thêm {added_bl} BlacklistEntity mẫu (tổng trong DB: {db.query(BlacklistEntity).count()}).")
+    print("        + vietcombank-vn.top  [PUBLIC_FEED 100%] → BR-01-1 NGUY_HIEM hard override")
+    print("        + +84912345678        [COMMUNITY   70%]  → BR-01-1b tối đa NGHI_NGO")
+
     print("\n========================================")
-    print("  HOÀN TẤT! Schema 12 bảng + Seed data hoàn thành.")
+    print("  HOÀN TẤT! Schema 12 bảng + Seed BR-01-1/1b/3/6/7/10 hoàn thành.")
     print("========================================")
 finally:
     db.close()
