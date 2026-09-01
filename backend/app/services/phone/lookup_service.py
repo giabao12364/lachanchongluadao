@@ -42,7 +42,7 @@ class PhoneLookupResult:
     phone: str  # E.164
     carrier: str
     risk_level: RiskLevel
-    reasons: list[str]
+    reasons: list[dict[str, str]]
     recommended_action: str
     # BR-02-5 — dùng để ghi vào scan_result
     rule_score: int
@@ -78,20 +78,23 @@ def lookup_phone(db: Session, raw_phone: str) -> PhoneLookupResult:
     else:
         risk_level = signal.capped_risk_level or RiskLevel.NGHI_NGO
 
-    reasons: list[str] = []
+    reasons: list[dict[str, str]] = []
     if carrier != UNKNOWN_CARRIER:
-        reasons.append(f"Nhà mạng: {carrier}")
+        reasons.append({"source": "CARRIER", "text": f"Nhà mạng: {carrier}"})
     else:
-        reasons.append("Không xác định được nhà mạng")
+        reasons.append({"source": "CARRIER", "text": "Không xác định được nhà mạng"})
 
     if signal.matched and signal.reason_text:
-        reasons.append(signal.reason_text)
+        reasons.append({"source": "BLACKLIST", "text": signal.reason_text})
     elif risk_level == RiskLevel.AN_TOAN:
-        # FR-02.5, FR-02.6: AN_TOAN luôn kèm nhắc thận trọng, không khẳng định tuyệt đối
-        reasons.append(
-            "Không tìm thấy dấu hiệu lừa đảo với số này. Vẫn nên thận trọng "
-            "nếu có yêu cầu chuyển tiền hoặc mã OTP."
-        )
+        # FR-02.5/.6: AN_TOAN luôn kèm nhắc thận trọng, không khẳng định tuyệt đối
+        reasons.append({
+            "source": "SYSTEM",
+            "text": (
+                "Không tìm thấy dấu hiệu lừa đảo với số này. Vẫn nên thận trọng "
+                "nếu có yêu cầu chuyển tiền hoặc mã OTP."
+            ),
+        })
 
     return PhoneLookupResult(
         phone=e164,
