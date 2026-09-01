@@ -42,6 +42,18 @@ def _load_thresholds(db: Session) -> dict[str, Any]:
         _THRESHOLD_CACHE["max_final_score"] = int(m.get("pipeline.max_final_score", "100"))
         _THRESHOLD_CACHE["ai_timeout_seconds"] = int(m.get("ai.timeout_seconds", "5"))
         _THRESHOLD_CACHE["ai_system_prompt"] = m.get("ai.system_prompt")
+        _THRESHOLD_CACHE["rec_an_toan"] = m.get(
+            "recommended_action.an_toan",
+            "Không thấy dấu hiệu lừa đảo. Nếu có ai yêu cầu chuyển tiền hoặc mã OTP, hãy dừng lại và hỏi người thân.",
+        )
+        _THRESHOLD_CACHE["rec_nghi_ngo"] = m.get(
+            "recommended_action.nghi_ngo",
+            "Có dấu hiệu đáng ngờ. Đừng bấm link và đừng cung cấp thông tin. Hãy hỏi lại người thân hoặc gọi số tổng đài chính thức.",
+        )
+        _THRESHOLD_CACHE["rec_nguy_hiem"] = m.get(
+            "recommended_action.nguy_hiem",
+            "Rất có thể là lừa đảo. Không bấm link, không chuyển tiền, không cung cấp mã OTP. Hãy xóa tin nhắn và chặn số này.",
+        )
         _THRESHOLD_CACHE["ts"] = now
     except Exception as e:
         logger.warning("[pipeline] Failed to load AppConfig, using cached defaults: %s", e)
@@ -210,16 +222,25 @@ def _resolve_risk(score: int, t: dict[str, Any]) -> tuple[str, str]:
     if score >= nguy_hiem:
         return (
             "NGUY_HIEM",
-            "Rất có thể là lừa đảo. Không bấm link, không chuyển tiền, không cung cấp OTP/mật khẩu. Gọi tổng đài chính thức của ngân hàng/cơ quan liên quan để xác minh.",
+            t.get(
+                "rec_nguy_hiem",
+                "Rất có thể là lừa đảo. Không bấm link, không chuyển tiền, không cung cấp mã OTP. Hãy xóa tin nhắn và chặn số này.",
+            ),
         )
     if score >= nghi_ngo:
         return (
             "NGHI_NGO",
-            "Nội dung có dấu hiệu nghi vấn. Hãy kiểm tra kỹ thông tin trước khi thao tác, không bấm link/nhập OTP tùy tiện.",
+            t.get(
+                "rec_nghi_ngo",
+                "Có dấu hiệu đáng ngờ. Đừng bấm link và đừng cung cấp thông tin. Hãy hỏi lại người thân hoặc gọi số tổng đài chính thức.",
+            ),
         )
     return (
         "AN_TOAN",
-        "Không phát hiện dấu hiệu lừa đảo phổ biến. Vẫn nên thận trọng nếu có yêu cầu chuyển tiền, bấm link lạ hoặc chia sẻ thông tin tài khoản/OTP.",
+        t.get(
+            "rec_an_toan",
+            "Không thấy dấu hiệu lừa đảo. Nếu có ai yêu cầu chuyển tiền hoặc mã OTP, hãy dừng lại và hỏi người thân.",
+        ),
     )
 
 
@@ -345,7 +366,7 @@ def execute_scan_pipeline(raw_content: str, db: Session) -> dict[str, Any]:
     if risk_level == "AN_TOAN" and not signals:
         signals.append({
             "source": "SYSTEM", "rule_code": None, "score": 0,
-            "reason_text": "Không phát hiện dấu hiệu lừa đảo phổ biến. Vẫn nên thận trọng nếu có yêu cầu chuyển tiền hoặc chia sẻ thông tin tài khoản/OTP.",
+            "reason_text": thresholds.get("rec_an_toan", "Không thấy dấu hiệu lừa đảo. Nếu có ai yêu cầu chuyển tiền hoặc mã OTP, hãy dừng lại và hỏi người thân."),
             "evidence": None,
         })
 
