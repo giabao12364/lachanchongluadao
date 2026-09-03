@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 class CreateScanRequest(BaseModel):
     input_type: str = Field(..., pattern="^(TEXT|URL|PHONE|IMAGE)$", description="Loại đầu vào: TEXT / URL / PHONE / IMAGE")
-    raw_content: str = Field(..., min_length=1, max_length=5000, description="Nội dung cần quét (text hoặc URL hoặc số điện thoại)")
+    content: str = Field(..., min_length=1, max_length=5000, description="Nội dung cần quét (text hoặc URL hoặc số điện thoại hoặc ảnh OCR xong). 1-5000 ký tự.")
     platform: Optional[str] = Field("web", max_length=20, description="Nền tảng thiết bị: web / android / ios")
 
 
@@ -18,8 +18,6 @@ class ScanReasonOut(BaseModel):
     source: Optional[str] = None
     text: str = ""
     rule_code: Optional[str] = None
-    score: int = 0
-    evidence: Any = None
 
 
 class CreateScanResponse(BaseModel):
@@ -39,3 +37,14 @@ class CreateScanResponse(BaseModel):
     recommended_action: str
     created_at: Optional[str] = None
     completed_at: Optional[str] = None
+
+
+class Ep01CreateScanResponse(BaseModel):
+    """Response CHÍNH XÁC theo FR-01 EP-01 spec (chỉ 7 fields + created_at, không thừa field)."""
+    scan_id: str
+    risk_level: str
+    final_score: int
+    reasons: List[ScanReasonOut]
+    recommended_action: str
+    ai_available: bool
+    created_at: str

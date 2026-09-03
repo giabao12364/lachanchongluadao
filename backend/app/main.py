@@ -30,10 +30,6 @@ app.add_middleware(
 app.include_router(
     scans.router,
     prefix="/api/v1",
-    tags=[
-        "FR-01: Tạo & Chi tiết lượt quét (EP-01 POST /scans, EP-02 GET /scans/{id}) — AI pipeline + BR-01-6",
-        "FR-06: Lịch sử quét (EP-03 — GET /scans)",
-    ],
 )
 app.include_router(
     patterns.router,
