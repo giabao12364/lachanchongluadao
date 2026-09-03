@@ -1,18 +1,13 @@
-"""
-T-031 — Chống report trùng của cùng user (BR-04-2)
-Dựa vào UniqueConstraint(user_id, entity_type, normalized_value) đã có sẵn
-trên bảng scam_report (Đức, db_models.py) — DB tự chặn trùng, hàm này chỉ
-cần bắt lỗi và trả về kết quả thân thiện, không để crash 500.
-"""
+
 from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.db_models import ScamReport, EntityType
-from app.services.reports.report_validator import ValidatedReportEntity
 from app.models.db_models import ScamReport, EntityType, ReportStatus
+from app.services.reports.report_validator import ValidatedReportEntity
+
 
 
 @dataclass
@@ -59,8 +54,7 @@ def create_report(
     try:
         db.commit()
     except IntegrityError:
-        # Fallback hiếm gặp: race condition giữa lúc query existing và lúc insert
-        # (2 request cùng lúc từ cùng user) -> UniqueConstraint chặn ở tầng DB.
+        
         db.rollback()
         existing = (
             db.query(ScamReport)
