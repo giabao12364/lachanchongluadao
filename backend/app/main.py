@@ -5,6 +5,9 @@ from app.api.v1 import (
     scans,
     patterns,
 )
+from app.core.exceptions import register_exception_handlers
+from app.core.middleware import DeviceUidMiddleware
+from app.core.rate_limit import RateLimitMiddleware
 
 app = FastAPI(
     title="Lá Chắn Chống Lừa Đảo API",
@@ -26,6 +29,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# T-007: Thu tu add_middleware RAT QUAN TRONG: add sau -> chay TRUOC
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(DeviceUidMiddleware)
+
+# T-006: Dang ky exception handler de chuan hoa moi loi tra ve
+register_exception_handlers(app)
 
 app.include_router(
     scans.router,
