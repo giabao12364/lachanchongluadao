@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 
 from app.api.v1 import (
     scans,
@@ -15,6 +16,11 @@ app = FastAPI(
         "Backend: FR-01 (Tạo quét: POST /scans, EP-01 + EP-02 chi tiết), "
         "FR-03 (Mẫu cảnh báo: GET /scam-patterns, /scam-patterns/{id}), "
         "FR-06 (Lịch sử quét: GET /scans). Đã loại bỏ FR-02/FR-04/FR-05."
+        "\n\nLưu ý test trên /docs (môi trường dev):"
+        "\n- Nếu thiếu header `X-Device-Uid`, hệ thống sẽ tự gán giá trị mặc định "
+        "`dev-swagger-default-device-0000` để anh/chị test nhanh không bị lỗi 400."
+        "\n- Nếu muốn test với giá trị device-uid tùy chỉnh: bấm nút 🔒 Authorize "
+        "góc trên phải, nhập chuỗi định danh và nhấn Authorize."
     ),
     version="3.0.0-ai",
     docs_url="/docs",
@@ -36,6 +42,37 @@ app.add_middleware(DeviceUidMiddleware)
 
 # T-006: Dang ky exception handler de chuan hoa moi loi tra ve
 register_exception_handlers(app)
+
+
+def _custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    # Thêm API Key security scheme để Swagger UI có nút 🔒 Authorize
+    # nhập X-Device-Uid thủ công (nếu dev muốn dùng giá trị khác default)
+    openapi_schema["components"]["securitySchemes"] = {
+        "X-Device-Uid": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-Device-Uid",
+            "description": (
+                "Định danh thiết bị. Môi trường dev KHÔNG bắt buộc nhập "
+                "(nếu thiếu sẽ tự gán giá trị mặc định). "
+                "Môi trường prod BẮT BUỘC gửi header này."
+            ),
+        }
+    }
+    openapi_schema["security"] = [{"X-Device-Uid": []}]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = _custom_openapi
 
 app.include_router(
     scans.router,
