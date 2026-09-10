@@ -66,7 +66,7 @@ def main():
         all_pass &= assert_score("Score thấp", r3["final_score"] <= 15, True)
 
         # --- Test case 4: Việc nhẹ lương cao + Số TK ---
-        t4 = "Tuyển dụng việc làm tại nhà lương 25tr/tháng, nộp hồ sơ STK 1234567890 (MBBank), yêu cầu chốt nhanh."
+        t4 = "Tuyển dụng việc làm tại nhà thu nhập cao 25tr/tháng, nộp hồ sơ STK 1234567890 (MBBank), yêu cầu chốt nhanh."
         print(f"\n📝 TEST 4 (Tuyển dụng + STK): {t4}\n")
         r4 = execute_scan_pipeline(t4, db)
         rc4 = r4.get("reasons", [])

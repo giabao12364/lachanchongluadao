@@ -106,6 +106,21 @@ User message: normalized_text của lượt quét.""",
         "value": "5",
         "value_type": "int",
     },
+    {
+        "key": "recommended_action.an_toan",
+        "value": "Không thấy dấu hiệu lừa đảo. Nếu có ai yêu cầu chuyển tiền hoặc mã OTP, hãy dừng lại và hỏi người thân.",
+        "value_type": "string",
+    },
+    {
+        "key": "recommended_action.nghi_ngo",
+        "value": "Có dấu hiệu đáng ngờ. Đừng bấm link và đừng cung cấp thông tin. Hãy hỏi lại người thân hoặc gọi số tổng đài chính thức.",
+        "value_type": "string",
+    },
+    {
+        "key": "recommended_action.nguy_hiem",
+        "value": "Rất có thể là lừa đảo. Không bấm link, không chuyển tiền, không cung cấp mã OTP. Hãy xóa tin nhắn và chặn số này.",
+        "value_type": "string",
+    },
 ]
 
 

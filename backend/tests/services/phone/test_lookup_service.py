@@ -49,14 +49,14 @@ class TestLookupPhoneCarrier:
         db = _FakeSession()
         result = lookup_phone(db, "0987654321")
         assert result.carrier == "Viettel"
-        assert "Nhà mạng: Viettel" in result.reasons
+        assert any(r["text"] == "Nhà mạng: Viettel" for r in result.reasons)
 
     def test_unknown_carrier(self):
         # AT-02-2: Tra số đầu số lạ -> reasons có "Không xác định được nhà mạng"
         db = _FakeSession()
         result = lookup_phone(db, "0199999999")
         assert result.carrier == "Không xác định"
-        assert "Không xác định được nhà mạng" in result.reasons
+        assert any(r["text"] == "Không xác định được nhà mạng" for r in result.reasons)
 
 
 class TestLookupPhoneRiskMapping:

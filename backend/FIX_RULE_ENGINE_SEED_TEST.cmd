@@ -1,7 +1,7 @@
 @echo off
 REM ======================================================================
-REM FIX_RULE_ENGINE_SEED_TEST.cmd - 1 Click fix lỗi 500 Rule Engine (T-013)
-REM Chức năng: Auto-detect schema sai, DROP bảng cũ, Seed 11 rule BR-01-10,
+REM FIX_RULE_ENGINE_SEED_TEST.cmd - 1 Click fix lỗi 500 Rule Engine
+REM Chức năng: Alembic downgrade base + upgrade head (re-seed 11 rule BR-01-10),
 REM            Sau đó chạy test pipeline + yêu cầu khởi động lại backend
 REM ======================================================================
 setlocal EnableExtensions EnableDelayedExpansion
@@ -9,30 +9,32 @@ chcp 65001 >nul
 cd /d "%~dp0"
 echo.
 echo ╔══════════════════════════════════════════════════════════════════╗
-echo ║  FIX: Rule Engine 500 - Seed lại ScoringRule (BR-01-10)          ║
+echo ║  FIX: Rule Engine 500 - Alembic Re-seed ScoringRule (BR-01-10)   ║
 echo ╚══════════════════════════════════════════════════════════════════╝
 echo.
 
 REM ===========================================================
-REM BƯỚC 1: KIỂM TRA & CHẠY init_db.py (fix schema + seed rule)
+REM BƯỚC 1: ALEMBIC DOWNGRADE TO BASE + UPGRADE TO HEAD (re-seed sạch)
 REM ===========================================================
-echo [1/3] Chạy init_db.py để fix bảng scoring_rule + seed 11 rule BR-01-10...
-if exist "venv\Scripts\python.exe" (
-    venv\Scripts\python.exe init_db.py
+echo [1/3] Alembic downgrade base → upgrade head (recreate schema + seed 11 rule BR-01-10)...
+if exist "venv\Scripts\alembic.exe" (
+    venv\Scripts\alembic.exe downgrade base
+    venv\Scripts\alembic.exe upgrade head
     set INIT_RC=%ERRORLEVEL%
 ) else (
-    python init_db.py
+    alembic downgrade base
+    alembic upgrade head
     set INIT_RC=%ERRORLEVEL%
 )
 if not "!INIT_RC!"=="0" (
     echo.
-    echo ❌ LỖI: init_db.py thất bại (rc=!INIT_RC!). Kiểm tra lại Docker DB đang chạy? (postgresql ở localhost:5433)
+    echo ❌ LỖI: alembic thất bại (rc=!INIT_RC!). Kiểm tra lại Docker DB đang chạy? (postgresql ở localhost:5433)
     echo Gợi ý: chạy RUN_THIS_FIX.cmd trước để khởi động toàn bộ stack, rồi chạy lại script này.
     pause
     exit /b !INIT_RC!
 )
 echo.
-echo ✅ Init DB hoàn tất. Bảng scoring_rule giờ đã đúng schema model mới.
+echo ✅ Alembic migrate hoàn tất. Schema + seed đúng theo migrations.
 echo.
 
 REM ===========================================================

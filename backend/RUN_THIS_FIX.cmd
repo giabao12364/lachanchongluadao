@@ -53,7 +53,7 @@ echo.
 echo [3/10] Start stack: Postgres :5433  +  Redis :6379  +  FastAPI :8000
 docker compose up -d
 echo.
-echo     Cho container khoi dong va entrypoint chay init_db.py (fix schema scoring_rule)...
+echo     Cho container khoi dong va entrypoint chay alembic upgrade head (schema + seed)...
 timeout /t 8 /nobreak >nul
 
 echo.
@@ -63,8 +63,8 @@ docker compose ps
 echo -----------------------------------------------------------------
 echo.
 
-echo [5/10] Cho them 25s (entrypoint cho DB + init tables + seed 11 rule BR-01-10):
-echo     (Trong container: wait-for-db → init_db.py DROP+CREATE scoring_rule → seed → uvicorn)
+echo [5/10] Cho them 25s (entrypoint cho DB + alembic migrate + seed 11 rule BR-01-10):
+echo     (Trong container: wait-for-db → alembic upgrade head → uvicorn)
 timeout /t 25 /nobreak >nul
 
 echo.
@@ -87,7 +87,7 @@ if /i "!HC:~0,4!"=="FAIL" (
     echo.
     echo     [Goi y fix]:
     echo     1. Neu thay AttributeError: 'ScoringRule' object has no attribute 'condition_pattern'
-    echo        =^> DB chua sync model moi. Kiem tra init_db.py co chay?
+    echo        =^> DB chua sync model moi. Kiem tra alembic upgrade head co chay?
     echo     2. DB connection errors: Co the Postgres chua san sang, cho them 10s roi refresh.
     echo     3. Neu khong hieu loi, chup lai phan log tren gui anh fix tiep.
     echo.
@@ -116,7 +116,7 @@ if %PIPE_EXIT% NEQ 0 (
     echo     [Goi y]:
     echo       - Kiem tra scoring_rule count trong DB (phai = 11 rule):
     echo           docker compose exec db psql -U lachan_user -d lachan_db -c "select rule_code,score,pattern_type from scoring_rule order by score desc;"
-    echo       - Neu 0 rule: init_db.py chua hoan tat, thu cho them 10s va chay lai.
+    echo       - Neu 0 rule: alembic upgrade head chua hoan tat, thu cho them 10s va chay lai.
     echo       - Neu pattern_type sai: xoa volume PG roi build lai (buoc [1/10]).
     echo.
 ) else (
@@ -153,4 +153,3 @@ echo           docker compose exec db psql -U lachan_user -d lachan_db -c "selec
 echo.
 echo     Mo Swagger UI ngay...
 pause
-start "" "http://127.0.0.1:8000/docs"

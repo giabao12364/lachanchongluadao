@@ -1,4 +1,5 @@
 import base64
+import logging
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -9,10 +10,60 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.db_models import (
     ScanRequest, ScanResult, ScanSignal, ScanEntity, Device,
-    ScanStatus, RiskLevel,
+    ScanStatus, RiskLevel, InputType, SignalSource, EntityType,
+)
+from app.services.pipeline import execute_scan_pipeline
+from app.schemas.scan_schemas import (
+    CreateScanRequest, CreateScanResponse, ScanEntityOut, ScanReasonOut, Ep01CreateScanResponse,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+_EP01_ERRORS = {
+    "EMPTY_CONTENT": "Vui lòng nhập nội dung cần kiểm tra",
+    "CONTENT_TOO_LONG": "Nội dung quá dài, vui lòng rút gọn",
+    "INVALID_PHONE": "Số điện thoại không hợp lệ",
+    "INVALID_URL": "Đường link không hợp lệ",
+    "OCR_NO_TEXT": "Không đọc được chữ trong ảnh. Hãy chụp rõ hơn hoặc dán nội dung dạng chữ.",
+}
+
+
+def _ep01_error(code: str, status: int = 422) -> HTTPException:
+    return HTTPException(
+        status_code=status,
+        detail={"code": code, "message": _EP01_ERRORS.get(code, str(code))},
+    )
+
+
+import re as _re
+
+_PHONE_RE = _re.compile(r"^(\+84|0)(3|5|7|8|9)\d{7,8}$")
+_URL_RE = _re.compile(
+    r"^(https?://)?"
+    r"([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}"
+    r"(/[^\s]*)?$"
+)
+
+
+def _validate_ep01_body(body: CreateScanRequest) -> None:
+    raw = body.content if isinstance(body.content, str) else ""
+    trimmed = raw.strip()
+    itype = (body.input_type or "").upper()
+    if len(trimmed) < 1:
+        if itype == "IMAGE":
+            raise _ep01_error("OCR_NO_TEXT")
+        raise _ep01_error("EMPTY_CONTENT")
+    if len(raw) > 5000:
+        raise _ep01_error("CONTENT_TOO_LONG")
+    if itype == "PHONE":
+        digits = trimmed.replace(" ", "").replace("-", "").replace(".", "")
+        if not _PHONE_RE.match(digits):
+            raise _ep01_error("INVALID_PHONE")
+    if itype == "URL":
+        if not _URL_RE.match(trimmed):
+            raise _ep01_error("INVALID_URL")
 
 
 def encode_cursor(created_at: datetime, id: UUID) -> str:
@@ -56,7 +107,193 @@ def ensure_device(db: Session, device_uid: str, platform: str = "web") -> Device
     return device
 
 
-@router.get("/scans/{scan_id}", summary="[EP-02/XEM CHI TIẾT LỊCH SỬ] Chi tiết 1 lượt quét trong lịch sử")
+def _to_signal_source(src_str: Optional[str]) -> SignalSource:
+    s = (src_str or "SYSTEM").upper()
+    if s == "BLACKLIST":
+        return SignalSource.BLACKLIST
+    if s == "RULE":
+        return SignalSource.RULE
+    if s == "AI":
+        return SignalSource.AI
+    if s == "COMMUNITY":
+        return SignalSource.COMMUNITY
+    return SignalSource.RULE
+
+
+def _to_risk_level_enum(risk_str: str) -> RiskLevel:
+    s = (risk_str or "AN_TOAN").upper()
+    if s == "NGUY_HIEM":
+        return RiskLevel.NGUY_HIEM
+    if s == "NGHI_NGO":
+        return RiskLevel.NGHI_NGO
+    return RiskLevel.AN_TOAN
+
+
+def _to_input_type_enum(itype: str) -> InputType:
+    s = (itype or "TEXT").upper()
+    if s == "URL":
+        return InputType.URL
+    if s == "PHONE":
+        return InputType.PHONE
+    if s == "IMAGE":
+        return InputType.IMAGE
+    return InputType.TEXT
+
+
+_TAG_FR01 = "FR-01: Tạo & Chi tiết lượt quét (EP-01 POST /scans, EP-02 GET /scans/{id}) — AI pipeline + BR-01-6"
+_TAG_FR06 = "FR-06: Lịch sử quét (EP-03 — GET /scans)"
+
+
+@router.post("/scans", summary="[FR-01 / EP-01] Tạo lượt quét mới (AI pipeline + fail-safe BR-01-6)", tags=[_TAG_FR01])
+def create_scan(
+    body: CreateScanRequest,
+    x_device_uid: str = Header(..., alias="X-Device-Uid", description="Định danh thiết bị"),
+    db: Session = Depends(get_db),
+):
+    """
+    FR-01: Tạo lượt quét mới, chạy full pipeline (Extract → Blacklist → Rule → AI → Aggregate).
+    Luồng trạng thái:
+      PENDING → PROCESSING → COMPLETED (hoặc FAILED chỉ khi lỗi hạ tầng, KHÔNG dùng cho AI lỗi).
+    BR-01-6: AI lỗi/timeout → vẫn trả kết quả Blacklist+Rule, ai_available=false,
+    nếu rule_score>0 thì tối đa NGHI_NGO (cấm AN_TOAN), kèm cảnh báo mềm.
+    BR-01-3: Ngưỡng điểm 0-29 AN_TOAN, 30-69 NGHI_NGO, 70-100 NGUY_HIEM.
+    BR-01-11: recommended_action chính xác text theo từng mức rủi ro.
+    EP-01 422 errors: EMPTY_CONTENT, CONTENT_TOO_LONG, INVALID_PHONE, INVALID_URL, OCR_NO_TEXT.
+    """
+    _validate_ep01_body(body)
+
+    try:
+        device = ensure_device(db, x_device_uid, body.platform)
+    except Exception as e:
+        logger.error("[create_scan][INFRA] ensure_device failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Lỗi hệ thống, vui lòng thử lại sau")
+
+    scan_req = ScanRequest(
+        device_id=device.id,
+        user_id=getattr(device, "user_id", None),
+        input_type=_to_input_type_enum(body.input_type),
+        raw_content=body.content,
+        normalized_text=(body.content or "").strip(),
+        status=ScanStatus.PENDING,
+    )
+    db.add(scan_req)
+    try:
+        db.flush()
+    except Exception as e:
+        logger.error("[create_scan][INFRA] Cannot insert ScanRequest: %s", e, exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Lỗi hệ thống, không thể lưu yêu cầu quét")
+
+    scan_req.status = ScanStatus.PROCESSING
+    pipeline_result = None
+    infra_error = None
+
+    try:
+        pipeline_result = execute_scan_pipeline(body.content, db)
+    except Exception as e:
+        logger.error("[create_scan][INFRA] execute_scan_pipeline raised exception: %s", e, exc_info=True)
+        infra_error = e
+
+    if infra_error is not None:
+        scan_req.status = ScanStatus.FAILED
+        try:
+            db.commit()
+        except Exception as ce:
+            logger.error("[create_scan][INFRA] commit FAILED status failed: %s", ce)
+            db.rollback()
+        raise HTTPException(status_code=500, detail="Lỗi xử lý quét, vui lòng thử lại sau")
+
+    try:
+        scan_req.normalized_text = pipeline_result.get("normalized_text") or (body.content or "").strip()
+
+        for ent in pipeline_result.get("extracted_entities", []):
+            etype_str = ent.get("entity_type") or "URL"
+            try:
+                etype = EntityType[etype_str] if etype_str in EntityType.__members__ else EntityType.URL
+            except Exception:
+                etype = EntityType.URL
+            se = ScanEntity(
+                scan_request_id=scan_req.id,
+                entity_type=etype,
+                raw_value=ent.get("raw_value") or "",
+                normalized_value=ent.get("normalized_value") or "",
+            )
+            db.add(se)
+
+        risk_str = pipeline_result.get("risk_level", "AN_TOAN")
+        result = ScanResult(
+            scan_request_id=scan_req.id,
+            risk_level=_to_risk_level_enum(risk_str),
+            final_score=int(pipeline_result.get("final_score") or 0),
+            rule_score=int(pipeline_result.get("rule_score") or 0),
+            ai_score=pipeline_result.get("ai_score"),
+            ai_available=bool(pipeline_result.get("ai_available", False)),
+            has_hard_override=bool(pipeline_result.get("has_hard_override", False)),
+            recommended_action=pipeline_result.get("recommended_action") or "",
+        )
+        db.add(result)
+
+        for sig in pipeline_result.get("signals", []):
+            src = _to_signal_source(sig.get("source"))
+            raw_score = sig.get("score")
+            safe_score = int(raw_score) if isinstance(raw_score, (int, float)) else 0
+            ss = ScanSignal(
+                scan_request_id=scan_req.id,
+                source=src,
+                rule_code=sig.get("rule_code") if src == SignalSource.RULE else None,
+                score=safe_score,
+                reason_text=sig.get("reason_text") or "",
+                evidence=sig.get("evidence"),
+            )
+            db.add(ss)
+
+        scan_req.status = ScanStatus.COMPLETED
+        scan_req.completed_at = datetime.utcnow()
+        db.commit()
+        db.refresh(scan_req)
+        db.refresh(result)
+
+    except Exception as e:
+        logger.error("[create_scan][INFRA] Persist results failed → FAILED status: %s", e, exc_info=True)
+        db.rollback()
+        scan_req.status = ScanStatus.FAILED
+        try:
+            db.commit()
+        except Exception as ce:
+            logger.error("[create_scan][INFRA] commit FAILED status failed: %s", ce)
+            db.rollback()
+        raise HTTPException(status_code=500, detail="Lỗi lưu kết quả quét, vui lòng thử lại sau")
+
+    reasons_out = [
+        ScanReasonOut(
+            source=r.get("source"),
+            text=r.get("text") or "",
+            rule_code=r.get("rule_code"),
+        )
+        for r in (pipeline_result.get("reasons") or [])
+    ]
+    if not reasons_out:
+        reasons_out.append(ScanReasonOut(
+            source="SYSTEM",
+            text=(pipeline_result.get("recommended_action") or "Không phát hiện dấu hiệu lừa đảo phổ biến."),
+            rule_code=None,
+        ))
+
+    created_at_str = (scan_req.created_at.isoformat() + "Z") if scan_req.created_at else ""
+
+    ep01_resp = Ep01CreateScanResponse(
+        scan_id=str(scan_req.id),
+        risk_level=risk_str,
+        final_score=int(pipeline_result.get("final_score") or 0),
+        reasons=reasons_out,
+        recommended_action=pipeline_result.get("recommended_action") or "",
+        ai_available=bool(pipeline_result.get("ai_available", False)),
+        created_at=created_at_str,
+    )
+    return ep01_resp.model_dump()
+
+
+@router.get("/scans/{scan_id}", summary="[EP-02/XEM CHI TIẾT LỊCH SỬ] Chi tiết 1 lượt quét trong lịch sử", tags=[_TAG_FR01])
 def get_scan_detail(
     scan_id: str = Path(..., description="ID lượt quét (scan history)"),
     x_device_uid: str = Header(..., alias="X-Device-Uid", description="Định danh thiết bị (đảm bảo lịch sử của đúng người)"),
@@ -134,7 +371,7 @@ def get_scan_detail(
     }
 
 
-@router.get("/scans", summary="[FR-06 / EP-03] Lịch sử quét")
+@router.get("/scans", summary="[FR-06 / EP-03] Lịch sử quét", tags=[_TAG_FR06])
 def get_scan_history(
     limit: int = Query(20, le=50, ge=1, description="Số lượng dòng trả về / trang (tối đa 50)"),
     cursor: Optional[str] = Query(None, description="Token next_cursor trang trước đó"),

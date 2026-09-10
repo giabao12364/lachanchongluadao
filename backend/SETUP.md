@@ -88,15 +88,14 @@ Cách sửa — đổi cổng riêng cho project này (không đụng gì tới 
    alembic upgrade head
    ```
 
-*(Team hiện đang dùng cổng 5433 vì đã gặp lỗi này — nếu `.env.example` trong
-repo đã sẵn 5433 thì bạn không cần đổi gì, cứ copy nguyên và dùng.)*
 
 ---
+TRƯỚC KHI COMMIT/PUSH YÊU CẦU:
+1. Chạy lại toàn bộ test suite (thói quen đã thống nhất trước mỗi lần push):
 
-## Việc CHƯA làm — không nằm trong phạm vi setup này
-- **Seed data (L4.4)**: 11 rule cho `scoring_rule`, ngưỡng cho `app_config`,
-  ~200 bản ghi test cho `blacklist_entity` — sẽ có script riêng, làm sau.
-- **2 điểm đang chờ PM (QuanNH) chốt** — ảnh hưởng tới schema, có thể phải
-  migrate thêm sau này:
-  - `app_user.phone_number` — đăng ký bằng SĐT hay email? (Mục treo #3)
-  - `scam_report` — cơ chế duyệt & ngưỡng tự động active? (Mục treo #6)
+docker compose exec web pytest -v
+
+2. Test thử qua Swagger/docs 
+
+
+
