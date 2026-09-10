@@ -1,0 +1,60 @@
+[
+  {"id": "SC-01", "category": "bank_impersonation", "text": "VIETCOMBANK: Tài khoản của bạn bị khóa do phát hiện đăng nhập bất thường, xác minh tài khoản ngay tại bit.ly/vcb-xn24h."},
+  {"id": "SC-02", "category": "bank_impersonation", "text": "TECHCOMBANK thông báo: tài khoản sẽ bị khóa trong vòng 24h nếu quý khách không xác minh tài khoản tại tinyurl.com/tcb-xn."},
+  {"id": "SC-03", "category": "bank_impersonation", "text": "BIDV cảnh báo bảo mật: phát hiện giao dịch lạ, tài khoản của bạn bị khóa tạm thời, xác minh tài khoản khẩn cấp qua t.co/bidv-xn."},
+  {"id": "SC-04", "category": "bank_impersonation", "text": "AGRIBANK: tài khoản sẽ bị khóa nếu quý khách không xác minh tài khoản ngay lập tức, truy cập goo.gl/agri-verify."},
+  {"id": "SC-05", "category": "bank_impersonation", "text": "SACOMBANK: hệ thống ghi nhận đăng nhập lạ, tạm khóa tài khoản của quý khách, xác minh tài khoản trước khi hết hạn hôm nay tại is.gd/scb-ok."},
+
+  {"id": "SC-06", "category": "otp_request", "text": "Bưu điện Việt Nam: đơn hàng của bạn đang chờ giao, vui lòng cung cấp mã OTP vừa gửi về điện thoại để xác nhận nhận hàng."},
+  {"id": "SC-07", "category": "otp_request", "text": "Ngân hàng ghi nhận giao dịch chuyển tiền 20 triệu đồng bất thường từ tài khoản của bạn, vui lòng đọc mã OTP để hủy giao dịch ngay."},
+  {"id": "SC-08", "category": "otp_request", "text": "Ví điện tử của bạn cần xác thực lại thiết bị, vui lòng cung cấp mã OTP vừa nhận được để hoàn tất."},
+  {"id": "SC-09", "category": "otp_request", "text": "Nhà mạng hỗ trợ nâng cấp SIM 4G lên 5G miễn phí, quý khách vui lòng đọc mã OTP cho nhân viên kỹ thuật."},
+  {"id": "SC-10", "category": "otp_request", "text": "Hệ thống phát hiện tài khoản của bạn đăng nhập từ thiết bị lạ, hãy gửi mã cho tổng đài để khóa thiết bị lạ giúp bạn."},
+  {"id": "SC-11", "category": "otp_request", "text": "Nhà mạng tặng gói cước ưu đãi đặc biệt, vui lòng cung cấp mã OTP để kích hoạt ngay hôm nay."},
+  {"id": "SC-12", "category": "otp_request", "text": "Thẻ ATM của quý khách vừa phát sinh giao dịch lạ 15 triệu đồng, gọi tổng đài và đọc mã OTP để hủy lệnh chuyển tiền."},
+  {"id": "SC-13", "category": "otp_request", "text": "Tổng đài viễn thông cần mã xác minh để xử lý khiếu nại cước phí phát sinh bất thường của quý khách."},
+
+  {"id": "SC-14", "category": "fake_friend_borrow", "text": "Mình là Minh nè, điện thoại mới hư nên nhắn từ số lạ, cho mình mượn 5 triệu gấp, chiều mai trả liền, chuyển tiền giúp mình vào STK 0987654321 Vietinbank nhé."},
+  {"id": "SC-15", "category": "fake_relative_emergency", "text": "Con là Lan đây mẹ, con đang cần gấp 8 triệu đóng viện phí cho bà, mẹ chuyển tiền vào số tài khoản 0123456789 giúp con với."},
+  {"id": "SC-16", "category": "fake_colleague_borrow", "text": "Anh ơi cho em mượn tạm 3 triệu, mai lương về em trả ngay, chuyển tiền vào STK 555666777 giúp em nhé."},
+  {"id": "SC-17", "category": "fake_romance_borrow", "text": "Anh yêu, em đang thiếu 8 triệu đóng học phí gấp, anh chuyển tiền giúp em vào STK 0912345678 nhé, em thương anh nhiều."},
+  {"id": "SC-18", "category": "fake_family_accident", "text": "Con của anh đang gặp tai nạn phải nhập viện cấp cứu, cần chuyển tiền ngay 40 triệu vào STK 0399988877 để bác sĩ xử lý kịp thời."},
+
+  {"id": "SC-19", "category": "fake_authority_threat", "text": "Cơ quan điều tra thông báo tài khoản của bạn liên quan đường dây rửa tiền, cần chuyển tiền tạm giữ 100 triệu vào STK 0555123456 để phục vụ điều tra."},
+  {"id": "SC-20", "category": "fake_tax_fine", "text": "Chi cục thuế thông báo bạn phát sinh khoản phạt chậm nộp, cần chuyển tiền trong vòng 24h vào số tài khoản 0888999000 để tránh bị cưỡng chế."},
+  {"id": "SC-21", "category": "fake_police_call", "text": "Công an thông báo số điện thoại của bạn liên quan vụ án hình sự, cần xác minh tài khoản khẩn cấp, chuyển tiền phong tỏa tạm thời vào STK 0777888999."},
+  {"id": "SC-22", "category": "fake_court_summon", "text": "Tòa án thông báo bạn có giấy triệu tập liên quan khoản nợ, để giải quyết nhanh vui lòng chuyển tiền phí xử lý hồ sơ vào số tài khoản 0666555444."},
+  {"id": "SC-23", "category": "fake_customs_fine", "text": "Hải quan thông báo lô hàng của bạn bị giữ do thiếu phí kiểm định, đóng phí ngay hôm nay để tránh bị tịch thu, chuyển vào STK 0912000111."},
+
+  {"id": "SC-24", "category": "fake_courier_fee", "text": "Bưu điện thông báo: đơn hàng của bạn đang chờ tại kho, vui lòng đóng phí vận chuyển 150 nghìn vào số tài khoản 0334455667 trước khi giao."},
+  {"id": "SC-25", "category": "fake_customs_import_fee", "text": "Kiện hàng nhập khẩu của bạn cần đóng phí hải quan 500 nghìn, chuyển tiền vào STK 0223344556 để nhận hàng trong hôm nay."},
+  {"id": "SC-26", "category": "fake_redelivery_fee", "text": "Đơn hàng giao không thành công do bạn vắng nhà, đóng phí giao lại 30 nghìn vào số tài khoản 0445566778 để shipper giao lại."},
+  {"id": "SC-27", "category": "fake_storage_fee", "text": "Kho hàng thông báo đơn của bạn quá hạn lưu kho, đóng phí lưu kho ngay vào STK 0556677889 để tránh bị hủy đơn."},
+  {"id": "SC-28", "category": "fake_refund_fee", "text": "Đơn hàng của bạn được hoàn tiền do lỗi hệ thống, vui lòng đóng phí xác nhận 20 nghìn vào số tài khoản 0667788990 để nhận lại tiền."},
+
+  {"id": "SC-29", "category": "prize_scam", "text": "Chúc mừng bạn đã trúng thưởng 50 triệu đồng từ chương trình tri ân khách hàng của Coca-Cola nhân dịp kỷ niệm 30 năm."},
+  {"id": "SC-30", "category": "prize_scam", "text": "Số điện thoại của bạn đã trúng giải đặc biệt trong chương trình quay số may mắn cuối năm của VinGroup."},
+  {"id": "SC-31", "category": "prize_scam", "text": "Quà tặng bất ngờ dành cho bạn: một chiếc xe máy SH trị giá 90 triệu đồng, vui lòng liên hệ ngay để nhận thưởng."},
+  {"id": "SC-32", "category": "prize_scam", "text": "Chúc mừng bạn đã trúng thưởng chương trình rút thăm may mắn cuối năm của siêu thị Coopmart, liên hệ nhận quà trong tuần này."},
+  {"id": "SC-33", "category": "prize_scam", "text": "Bạn đã trúng một chuyến du lịch Phú Quốc 4 ngày 3 đêm miễn phí, vui lòng xác nhận thông tin để nhận thưởng."},
+  {"id": "SC-34", "category": "prize_scam", "text": "Ngân hàng số thông báo bạn đã trúng thưởng thẻ tín dụng hạn mức cao, liên hệ tổng đài ngay để nhận thưởng."},
+
+  {"id": "SC-35", "category": "job_scam", "text": "Tuyển cộng tác viên: việc nhẹ lương cao, chỉ cần điện thoại là có thể làm tại nhà kiếm 500 nghìn mỗi ngày."},
+  {"id": "SC-36", "category": "job_scam", "text": "Tuyển dụng gấp nhân viên làm nhiệm vụ nhận hoa hồng trên sàn thương mại điện tử, thu nhập từ 1 đến 3 triệu mỗi ngày."},
+  {"id": "SC-37", "category": "job_scam", "text": "Cơ hội việc làm tại nhà thu nhập cao dành cho sinh viên, không cần kinh nghiệm, đăng ký ngay hôm nay để bắt đầu."},
+  {"id": "SC-38", "category": "job_scam", "text": "Tuyển nhân viên đánh giá sản phẩm online, làm nhiệm vụ nhận hoa hồng ngay sau mỗi đơn hàng hoàn thành."},
+  {"id": "SC-39", "category": "job_scam", "text": "Việc làm tại nhà thu nhập cao cho mẹ bỉm sữa, chỉ cần like và chia sẻ bài viết là có tiền ngay trong ngày."},
+  {"id": "SC-40", "category": "job_scam", "text": "Công ty đa quốc gia tuyển cộng tác viên online, việc nhẹ lương cao, chỉ cần vài giờ mỗi ngày là có thu nhập ổn định."},
+
+  {"id": "SC-41", "category": "investment_scam", "text": "Đầu tư bất động sản nghỉ dưỡng lợi nhuận 25% mỗi năm, đặt cọc giữ chỗ 10 triệu vào STK 0778899001 để nhận ưu đãi sớm."},
+  {"id": "SC-42", "category": "loan_scam", "text": "Duyệt vay nhanh không thế chấp 50 triệu trong 30 phút, nộp phí trước 500 nghìn vào số tài khoản 0889900112 để giải ngân ngay."},
+  {"id": "SC-43", "category": "crypto_investment_scam", "text": "Tham gia đầu tư tiền ảo sinh lời thụ động 20% mỗi tháng, đặt cọc tối thiểu 5 triệu vào STK 0990011223 để mở tài khoản giao dịch."},
+  {"id": "SC-44", "category": "fake_insurance_payout", "text": "Bạn được nhận bồi thường bảo hiểm 30 triệu đồng, vui lòng đóng phí thuế trước bạ vào số tài khoản 0110022334 để hoàn tất hồ sơ."},
+  {"id": "SC-45", "category": "fake_charity_scam", "text": "Chương trình từ thiện quyên góp cho trẻ em vùng lũ, quý vị đóng phí ủng hộ vào STK 0221133445 để được ghi danh tri ân."},
+
+  {"id": "SC-46", "category": "lookalike_domain", "text": "Vietcombank yêu cầu cập nhật thông tin bảo mật, truy cập ngay vietcombank-capnhat.top để tránh gián đoạn dịch vụ."},
+  {"id": "SC-47", "category": "lookalike_domain", "text": "Techcombank cảnh báo tài khoản của bạn bị khóa, đăng nhập lại tại techcombank-xacthuc.xyz để tiếp tục sử dụng dịch vụ."},
+  {"id": "SC-48", "category": "lookalike_domain", "text": "BIDV thông báo phát hiện đăng nhập bất thường, xác minh danh tính ngay tại bidv-baomat.icu trước khi tài khoản bị tạm ngưng."},
+  {"id": "SC-49", "category": "lookalike_domain", "text": "Agribank yêu cầu cập nhật sinh trắc học theo quy định mới, thực hiện ngay tại agribank-capnhat.tk để không bị gián đoạn giao dịch."},
+  {"id": "SC-50", "category": "suspicious_tld", "text": "Nhận ưu đãi hoàn tiền 50% cho đơn hàng đầu tiên, đăng ký ngay tại uudai-hoantien.club chỉ dành cho 100 khách hàng đầu tiên."}
+]
