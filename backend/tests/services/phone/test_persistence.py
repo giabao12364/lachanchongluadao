@@ -30,6 +30,7 @@ bằng "test-device-...". Có thể dọn tay bằng cách:
 import uuid
 
 import pytest
+from typing import Generator
 from sqlalchemy.orm import Session
 
 from app.models.db_models import Device, InputType, RiskLevel, ScanRequest, ScanResult, ScanStatus
@@ -38,7 +39,7 @@ from app.services.phone.persistence import _REPRESENTATIVE_SCORE, persist_phone_
 
 
 @pytest.fixture()
-def test_device(db_session: Session) -> Device:
+def test_device(db_session: Session) -> Generator[Device, None, None]:
     """Tạo 1 Device mới cho mỗi test, ẩn danh (user_id=None), rollback sau khi xong."""
     device = Device(
         device_uid=f"test-device-{uuid.uuid4()}",
