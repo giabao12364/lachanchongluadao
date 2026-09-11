@@ -1,7 +1,10 @@
 import enum
+import re
+from typing import Optional
 import uuid
 import sqlalchemy as sa
-from sqlalchemy import Boolean, CheckConstraint, Column, Enum as SAEnum, ForeignKey, Index, Integer, String, TIMESTAMP, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Column, Enum as SAEnum, ForeignKey, Index, Integer, String, TIMESTAMP, Text, UniqueConstraint, func, event
+from sqlalchemy.orm import Mapper, validates
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.core.database import Base
@@ -242,9 +245,9 @@ class ScamPattern(Base):
     category = Column(String(100), nullable=False)
     image_url = Column(Text, nullable=True)
     description = Column(Text, nullable=False)
-    signs = Column(Text, nullable=False)
-    example_content = Column(Text, nullable=False)
-    recommended_action = Column(Text, nullable=False)
+    signs = Column(Text, nullable=True)
+    example_content = Column(Text, nullable=True)
+    recommended_action = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, server_default=sa.text("false"))
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
@@ -252,7 +255,78 @@ class ScamPattern(Base):
     __table_args__ = (
         Index("idx_scam_pattern_active_created", "is_active", sa.text("created_at DESC")),
         Index("idx_scam_pattern_category", "category"),
+        CheckConstraint(
+            "NOT (is_active = true AND (BTRIM(signs) = '' OR BTRIM(example_content) = '' OR BTRIM(recommended_action) = ''))",
+            name="ck_scam_pattern_active_requires_3blocks",
+        ),
     )
+
+    @staticmethod
+    def _blank(val) -> bool:
+        if val is None:
+            return True
+        return not str(val).strip()
+
+    @classmethod
+    def validate_active_requirements(
+        cls,
+        is_active,
+        signs=None,
+        example_content=None,
+        recommended_action=None,
+        existing_obj: Optional["ScamPattern"] = None,
+    ) -> None:
+        if not is_active:
+            return
+        s = signs if signs is not None else (existing_obj.signs if existing_obj else "")
+        e = example_content if example_content is not None else (existing_obj.example_content if existing_obj else "")
+        r = recommended_action if recommended_action is not None else (existing_obj.recommended_action if existing_obj else "")
+        missing = []
+        if cls._blank(s):
+            missing.append("signs (dấu hiệu)")
+        if cls._blank(e):
+            missing.append("example_content (ví dụ tin nhắn / cuộc gọi)")
+        if cls._blank(r):
+            missing.append("recommended_action (khuyến nghị hành động)")
+        if missing:
+            raise ValueError(
+                "BR-03-2: Không thể kích hoạt is_active=true vì thiếu "
+                + ", ".join(missing)
+                + ". Vui lòng bổ sung đủ 3 khối (signs, example_content, recommended_action)."
+            )
+
+    @validates("is_active")
+    def _v_active(self, key, value):
+        try:
+            self.validate_active_requirements(
+                is_active=value,
+                signs=self.__dict__.get("signs"),
+                example_content=self.__dict__.get("example_content"),
+                recommended_action=self.__dict__.get("recommended_action"),
+                existing_obj=self,
+            )
+        except AttributeError:
+            pass
+        return value
+
+    @validates("signs", "example_content", "recommended_action")
+    def _v_blocks(self, key, value):
+        try:
+            curr_active = self.__dict__.get("is_active")
+            if curr_active:
+                new_s = value if key == "signs" else self.__dict__.get("signs")
+                new_e = value if key == "example_content" else self.__dict__.get("example_content")
+                new_r = value if key == "recommended_action" else self.__dict__.get("recommended_action")
+                self.validate_active_requirements(
+                    is_active=True,
+                    signs=new_s,
+                    example_content=new_e,
+                    recommended_action=new_r,
+                    existing_obj=self,
+                )
+        except AttributeError:
+            pass
+        return value
 
 
 class OtpRequest(Base):
