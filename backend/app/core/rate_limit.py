@@ -14,6 +14,7 @@ from app.models.db_models import AppConfig
 
 load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+_ENV = os.getenv("ENV", "prod").strip().lower()
 
 # X-Device-Uid là header BẮT BUỘC ở mọi endpoint (L3.4 quy ước chung).
 # Dùng làm fallback nếu middleware khác chưa kịp gán request.state.device_uid.
@@ -85,6 +86,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in EXCLUDED_PATHS:
             return await call_next(request)
 
+        if _ENV == "dev":
+            return await call_next(request)
+
         user_id = get_current_user_id(request)
 
         if user_id is not None:
@@ -93,14 +97,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         else:
             device_uid = _get_device_uid(request)
             if not device_uid:
-                # Không có device_uid (client không gửi header, request.state
-                # cũng chưa gán) -> KHÔNG bỏ qua rate limit (tránh bị lách),
-                # dùng IP làm bucket dự phòng với cùng ngưỡng ẩn danh.
                 client_ip = request.client.host if request.client else "unknown"
                 bucket_key = f"ip:{client_ip}"
             else:
                 bucket_key = f"device:{device_uid}"
-            limit = await _get_config_int("ratelimit.anonymous_hourly", default=20)
+            limit = await _get_config_int("ratelimit.anonymous_hourly", default=100)
 
         # redis_client là client đồng bộ (redis.from_url) -> cũng phải chạy
         # qua threadpool, tránh chặn event loop giống lý do với _get_config_int.
