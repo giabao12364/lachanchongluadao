@@ -6,6 +6,7 @@ from app.api.v1 import (
     patterns,
     phones,
 )
+from app.core.cache import register_scam_pattern_cache_events
 from app.core.exceptions import register_exception_handlers
 from app.core.middleware import DeviceUidMiddleware
 from app.core.rate_limit import RateLimitMiddleware
@@ -18,7 +19,7 @@ app = FastAPI(
         "FR-03 (Mẫu cảnh báo: GET /scam-patterns, /scam-patterns/{id}), "
         "FR-06 (Lịch sử quét: GET /scans)."
     ),
-    version="3.1.0-ai",
+    version="3.2.0-t028-cache",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -38,6 +39,10 @@ app.add_middleware(DeviceUidMiddleware)
 
 # T-006: Dang ky exception handler de chuan hoa moi loi tra ve
 register_exception_handlers(app)
+
+# T-028: Đăng ký SQLAlchemy event listeners cho ScamPattern cache invalidation.
+#        (patterns.py cũng gọi lại - idempotent, không sao)
+register_scam_pattern_cache_events()
 
 app.include_router(
     scans.router,
