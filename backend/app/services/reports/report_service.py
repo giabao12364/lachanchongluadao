@@ -14,7 +14,7 @@ from app.services.reports.blacklist_aggregator import register_independent_repor
 class CreateReportResult:
     report_id: UUID
     status: str
-    is_duplicate: bool  # True nếu đây là lần report thứ 2+ trùng của cùng user
+    is_duplicate: bool  
 
 
 def create_report(
@@ -23,10 +23,7 @@ def create_report(
     entity: ValidatedReportEntity,
     description: str | None = None,
 ) -> CreateReportResult:
-    """
-    Tạo 1 report mới. Nếu user này đã report đúng thực thể này rồi (BR-04-2),
-    KHÔNG tạo bản ghi mới — trả về report cũ kèm is_duplicate=True.
-    """
+   
     existing = (
         db.query(ScamReport)
         .filter(
@@ -52,7 +49,7 @@ def create_report(
     )
     db.add(new_report)
     try:
-        db.commit()
+        db.flush()  
     except IntegrityError:
         db.rollback()
         existing = (
@@ -70,12 +67,14 @@ def create_report(
             is_duplicate=True,
         )
 
+    try:
+        register_independent_report(db, entity.entity_type, entity.normalized_value)
+        db.commit()  
+    except Exception:
+        db.rollback()  
+        raise
+
     db.refresh(new_report)
-
-    # T-032: report này KHÔNG trùng (is_duplicate=False) -> tính là 1 report độc
-    # lập, cho vào aggregator để cộng report_count / auto-active theo BR-04-1
-    register_independent_report(db, entity.entity_type, entity.normalized_value)
-
     return CreateReportResult(
         report_id=new_report.id,
         status=new_report.status.value,
