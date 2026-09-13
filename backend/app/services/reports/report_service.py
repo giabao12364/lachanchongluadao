@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.db_models import ScamReport, EntityType, ReportStatus
 from app.services.reports.report_validator import ValidatedReportEntity
-
+from app.services.reports.blacklist_aggregator import register_independent_report
 
 
 @dataclass
@@ -54,7 +54,6 @@ def create_report(
     try:
         db.commit()
     except IntegrityError:
-        
         db.rollback()
         existing = (
             db.query(ScamReport)
@@ -72,6 +71,11 @@ def create_report(
         )
 
     db.refresh(new_report)
+
+    # T-032: report này KHÔNG trùng (is_duplicate=False) -> tính là 1 report độc
+    # lập, cho vào aggregator để cộng report_count / auto-active theo BR-04-1
+    register_independent_report(db, entity.entity_type, entity.normalized_value)
+
     return CreateReportResult(
         report_id=new_report.id,
         status=new_report.status.value,
