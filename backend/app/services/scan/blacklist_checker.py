@@ -7,6 +7,7 @@ blacklist_entity. Tầng này KHÔNG tự quyết định risk_level cuối cùn
 """
 from dataclasses import dataclass
 
+from sqlalchemy import case
 from sqlalchemy.orm import Session
 
 from app.models.db_models import (
@@ -17,6 +18,7 @@ from app.models.db_models import (
     RiskLevel,
 )
 from app.services.scan.extractor import ExtractedEntity
+_WEB_ENTITY_TYPES = (EntityType.URL, EntityType.DOMAIN)
 
 DEFAULT_HARD_OVERRIDE_CONFIDENCE = 90
 
@@ -69,13 +71,29 @@ def _build_reason(entity_type: EntityType, has_hard_override: bool) -> str:
 
 def check_entity_against_blacklist(db: Session, entity: ExtractedEntity) -> BlacklistSignal:
     """Đối chiếu 1 thực thể với blacklist_entity (chỉ xét bản ghi is_active=true)."""
+    if entity.entity_type in _WEB_ENTITY_TYPES:
+        type_filter = BlacklistEntity.entity_type.in_(_WEB_ENTITY_TYPES)
+    else:
+        type_filter = BlacklistEntity.entity_type == entity.entity_type
+
+    # Khi 1 giá trị khớp nhiều dòng (VD: 1 dòng URL cũ + 1 dòng DOMAIN mới cùng
+    # normalized_value), ưu tiên dòng đáng tin cậy hơn thay vì để DB tự chọn
+    # thứ tự ngẫu nhiên (BR-01-1: AI/dòng yếu hơn không được "hạ mức" phán
+    # quyết đã có). Thứ tự ưu tiên: nguồn tin cậy cao (PUBLIC_FEED/MANUAL)
+    # trước, rồi tới confidence giảm dần.
+    trust_rank = case(
+        (BlacklistEntity.source.in_([BlacklistSource.PUBLIC_FEED, BlacklistSource.MANUAL]), 0),
+        else_=1,
+    )
+
     row = (
         db.query(BlacklistEntity)
         .filter(
-            BlacklistEntity.entity_type == entity.entity_type,
+            type_filter,
             BlacklistEntity.normalized_value == entity.normalized_value,
             BlacklistEntity.is_active.is_(True),
         )
+        .order_by(trust_rank, BlacklistEntity.confidence.desc())
         .first()
     )
 
