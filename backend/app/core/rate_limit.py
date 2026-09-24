@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 
@@ -15,29 +16,68 @@ from app.models.db_models import AppConfig
 load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-# X-Device-Uid là header BẮT BUỘC ở mọi endpoint (L3.4 quy ước chung).
-# Dùng làm fallback nếu middleware khác chưa kịp gán request.state.device_uid.
+logger = logging.getLogger(__name__)
+
 DEVICE_UID_HEADER = "X-Device-Uid"
 
-# Cache app_config trong bộ nhớ để tránh query DB đồng bộ trên MỌI request
-# (middleware chạy async, query sync sẽ chặn event loop nếu gọi trực tiếp).
-# Vẫn tuân thủ KT-03 (đọc từ app_config, không hardcode) — chỉ trễ tối đa
-# _CONFIG_CACHE_TTL giây khi admin đổi ngưỡng trên DB.
 _CONFIG_CACHE_TTL = 30  # giây
-_config_cache: dict[str, tuple[int, float]] = {}  # key -> (value, fetched_at)
+_config_cache: dict[str, tuple[int, float]] = {}
 
-EXCLUDED_PATHS = [
-    "/",
+# ---------------------------------------------------------------------------
+# QUYẾT ĐỊNH (đưa ra khi PM chưa kịp duyệt, ghi lại để review lại sau — xem
+# giải thích đầy đủ trong PR description / chat với PM):
+#
+# 1) window KHÔNG configurable qua app_config, quay về hằng số.
+#    Lý do: tên các key L4.4 đã mã hoá sẵn đơn vị thời gian
+#    (ratelimit.*_HOURLY, otp.max_send_per_10MIN). Một "ratelimit.window_
+#    seconds" dùng chung cho mọi scope vừa không khớp tên key, vừa là 1 núm
+#    vặn chung nguy hiểm (đổi cho OTP sẽ vô tình đổi luôn cả scan/report).
+#    Nếu sau này thực sự cần window configurable per-scope, phải tách thành
+#    nhiều key riêng (vd ratelimit.scan_window_seconds, .report_window_
+#    seconds), không dùng lại 1 key chung như bản cũ.
+#
+# 2) check_report_rate_limit() dùng FAIL-OPEN khi Redis/DB lỗi (giống
+#    RateLimitMiddleware), thay vì fail-closed (500) ở bản trước đó.
+#    Lý do: đồng bộ với tiền lệ BR-01-6/L3.7 (hạ tầng phụ trợ lỗi không
+#    được chặn chức năng chính). Giá trị phòng thủ của rate-limit 5/h/user
+#    thấp (BR-04-2 đã chặn trùng entity độc lập với rate-limit; thao túng
+#    DD-06 cần ≥3 tài khoản khác nhau, rate-limit theo user không chặn được
+#    kịch bản đó dù bật hay tắt) — trong khi fail-closed chặn nhầm người
+#    dùng thật mỗi khi Redis chớp tắt, ảnh hưởng trực tiếp mục tiêu sản
+#    phẩm (khuyến khích báo cáo kịp thời — L1.3).
+#
+# Cả 2 điểm này CẦN PM xác nhận lại
+# ---------------------------------------------------------------------------
+
+HOURLY_WINDOW_SECONDS = 3600  # dùng chung cho mọi rule "_hourly" (scan, report)
+
+# Các tiền tố đường dẫn ĐƯỢC LOẠI TRỪ khỏi Global Rate Limit:
+# - Các route đọc công khai (scam-patterns EP-05/EP-10)
+# - Các route có rate-limit riêng (reports T-033, sau này là auth/otp FR-05)
+EXCLUDED_PREFIXES = (
     "/docs",
     "/redoc",
     "/openapi.json",
-]
+    "/api/v1/reports",
+    "/api/v1/scam-patterns",
+)
 
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
+# Lua script đảm bảo tính ATOMIC tuyệt đối 100% trên Redis Engine.
+# Tương thích với MỌI phiên bản Redis (kể cả < 7.0) mà không cần cờ EXPIRE NX.
+_RATELIMIT_LUA_SCRIPT = """
+local current = redis.call('INCR', KEYS[1])
+if tonumber(current) == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+local ttl = redis.call('TTL', KEYS[1])
+return {current, ttl}
+"""
+_ratelimit_script = redis_client.register_script(_RATELIMIT_LUA_SCRIPT)
+
 
 def _query_config_int_sync(key: str, default: int) -> int:
-    """Sync DB call — luôn chạy qua threadpool, không gọi trực tiếp trong async code."""
     db = SessionLocal()
     try:
         row = db.query(AppConfig).filter(AppConfig.key == key).first()
@@ -46,35 +86,37 @@ def _query_config_int_sync(key: str, default: int) -> int:
         db.close()
 
 
-async def _get_config_int(key: str, default: int) -> int:
+def _get_config_int_sync_cached(key: str, default: int) -> int:
     now = time.monotonic()
     cached = _config_cache.get(key)
     if cached is not None and (now - cached[1]) < _CONFIG_CACHE_TTL:
         return cached[0]
-
-    value = await run_in_threadpool(_query_config_int_sync, key, default)
+    value = _query_config_int_sync(key, default)
     _config_cache[key] = (value, now)
     return value
+
+
+async def _get_config_int(key: str, default: int) -> int:
+    return await run_in_threadpool(_get_config_int_sync_cached, key, default)
 
 
 def _get_device_uid(request: Request) -> str | None:
     device_uid = getattr(request.state, "device_uid", None)
     if device_uid:
         return device_uid
-    # Fallback: đọc trực tiếp từ header nếu middleware set device_uid chưa
-    # chạy trước RateLimitMiddleware, hoặc chưa tồn tại.
     return request.headers.get(DEVICE_UID_HEADER)
 
 
-def _check_and_increment(bucket_key: str, limit: int, window_seconds: int = 3600):
+def _check_and_increment(bucket_key: str, limit: int, window_seconds: int) -> int | None:
+    """
+    Atomic INCR + EXPIRE + TTL qua Redis Lua Script (EVALSHA).
+    Đảm bảo 100% thread-safe/process-safe ở mức cơ sở dữ liệu.
+    """
     redis_key = f"ratelimit:{bucket_key}"
-    current = redis_client.incr(redis_key)
-
-    if current == 1:
-        redis_client.expire(redis_key, window_seconds)
+    res = _ratelimit_script(keys=[redis_key], args=[window_seconds])
+    current, ttl = res[0], res[1]
 
     if current > limit:
-        ttl = redis_client.ttl(redis_key)
         return ttl if ttl and ttl > 0 else window_seconds
 
     return None
@@ -82,31 +124,36 @@ def _check_and_increment(bucket_key: str, limit: int, window_seconds: int = 3600
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in EXCLUDED_PATHS:
+        path = request.url.path
+
+        if path == "/" or path.startswith(EXCLUDED_PREFIXES):
             return await call_next(request)
 
-        user_id = get_current_user_id(request)
+        try:
+            user_id = get_current_user_id(request)
 
-        if user_id is not None:
-            bucket_key = f"user:{user_id}"
-            limit = await _get_config_int("ratelimit.user_hourly", default=100)
-        else:
-            device_uid = _get_device_uid(request)
-            if not device_uid:
-                # Không có device_uid (client không gửi header, request.state
-                # cũng chưa gán) -> KHÔNG bỏ qua rate limit (tránh bị lách),
-                # dùng IP làm bucket dự phòng với cùng ngưỡng ẩn danh.
-                client_ip = request.client.host if request.client else "unknown"
-                bucket_key = f"ip:{client_ip}"
+            if user_id is not None:
+                bucket_key = f"user:{user_id}"
+                limit = await _get_config_int("ratelimit.user_hourly", default=100)
             else:
-                bucket_key = f"device:{device_uid}"
-            limit = await _get_config_int("ratelimit.anonymous_hourly", default=20)
+                device_uid = _get_device_uid(request)
+                if not device_uid:
+                    client_ip = request.client.host if request.client else "unknown"
+                    bucket_key = f"ip:{client_ip}"
+                else:
+                    bucket_key = f"device:{device_uid}"
+                limit = await _get_config_int("ratelimit.anonymous_hourly", default=20)
 
-        # redis_client là client đồng bộ (redis.from_url) -> cũng phải chạy
-        # qua threadpool, tránh chặn event loop giống lý do với _get_config_int.
-        retry_after = await run_in_threadpool(
-            _check_and_increment, bucket_key, limit, 3600
-        )
+            retry_after = await run_in_threadpool(
+                _check_and_increment, bucket_key, limit, HOURLY_WINDOW_SECONDS
+            )
+        except Exception:
+            # Fail-open: Redis/DB lỗi không được làm sập cả API (T-006).
+            logger.warning(
+                "[rate_limit] bỏ qua kiểm tra rate limit do lỗi hạ tầng (Redis/DB)",
+                exc_info=True,
+            )
+            return await call_next(request)
 
         if retry_after is not None:
             return JSONResponse(
@@ -119,3 +166,5 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
 
         return await call_next(request)
+
+
