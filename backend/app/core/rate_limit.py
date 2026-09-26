@@ -46,7 +46,7 @@ _config_cache: dict[str, tuple[int, float]] = {}
 #    dùng thật mỗi khi Redis chớp tắt, ảnh hưởng trực tiếp mục tiêu sản
 #    phẩm (khuyến khích báo cáo kịp thời — L1.3).
 #
-# Cả 2 điểm này CẦN PM xác nhận lại
+# Cả 2 điểm này CẦN PM xác nhận lại 
 # ---------------------------------------------------------------------------
 
 HOURLY_WINDOW_SECONDS = 3600  # dùng chung cho mọi rule "_hourly" (scan, report)
@@ -168,3 +168,33 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def check_report_rate_limit(user_id: str) -> int | None:
+    """
+    T-033 — BR-04-3: Tối đa ratelimit.report_hourly (mặc định 5) report/giờ/user.
+
+    Độc lập với RateLimitMiddleware: bucket key riêng (report:<user_id>) và
+    config key riêng (ratelimit.report_hourly) -> không trừ chung quota
+    ratelimit.user_hourly. Route /api/v1/reports đã nằm trong EXCLUDED_PREFIXES
+    nên không bị RateLimitMiddleware xử lý trùng.
+
+    CHỈ gọi từ route khai `def` (sync, đúng quy ước toàn repo: scans.py,
+    phones.py...) — FastAPI tự chạy trong threadpool. KHÔNG gọi hàm này
+    trực tiếp trong `async def` mà không bọc run_in_threadpool, vì đây là
+    hàm blocking (Redis + DB đồng bộ).
+
+    Fail-open khi Redis/DB lỗi (xem khối QUYẾT ĐỊNH ở đầu file) — trả None
+    (không chặn), chỉ log cảnh báo. Nếu PM chốt ngược lại (fail-closed),
+    đổi nhánh except bên dưới thành raise HTTPException(500, ...).
+    """
+    try:
+        limit = _get_config_int_sync_cached("ratelimit.report_hourly", default=5)
+        bucket_key = f"report:{user_id}"
+        return _check_and_increment(bucket_key, limit, HOURLY_WINDOW_SECONDS)
+    except Exception:
+        logger.warning(
+            "[check_report_rate_limit] Redis/DB lỗi khi kiểm tra report rate "
+            "limit cho user %s — bỏ qua rate-limit, KHÔNG chặn report.",
+            user_id,
+            exc_info=True,
+        )
+        return None
