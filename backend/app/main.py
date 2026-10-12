@@ -5,20 +5,23 @@ from app.api.v1 import (
     scans,
     patterns,
     phones,
+    reports,
 )
+from app.core.cache import register_scam_pattern_cache_events
 from app.core.exceptions import register_exception_handlers
 from app.core.middleware import DeviceUidMiddleware
 from app.core.rate_limit import RateLimitMiddleware
 
 app = FastAPI(
     title="Lá Chắn Chống Lừa Đảo API",
-    description=(
+        description=(
         "Backend: FR-01 (Tạo quét: POST /scans, EP-01 + EP-02 chi tiết), "
         "FR-02 (Tra cứu số điện thoại: GET /phones/{phone}), "
         "FR-03 (Mẫu cảnh báo: GET /scam-patterns, /scam-patterns/{id}), "
+        "FR-04 (Báo cáo lừa đảo: POST /reports), "
         "FR-06 (Lịch sử quét: GET /scans)."
     ),
-    version="3.1.0-ai",
+    version="3.2.0-t028-cache",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -39,6 +42,10 @@ app.add_middleware(DeviceUidMiddleware)
 # T-006: Dang ky exception handler de chuan hoa moi loi tra ve
 register_exception_handlers(app)
 
+# T-028: Đăng ký SQLAlchemy event listeners cho ScamPattern cache invalidation.
+#        (patterns.py cũng gọi lại - idempotent, không sao)
+register_scam_pattern_cache_events()
+
 app.include_router(
     scans.router,
     prefix="/api/v1",
@@ -53,6 +60,10 @@ app.include_router(
     prefix="/api/v1",
     tags=["FR-03: Mẫu cảnh báo (EP-05 — GET /scam-patterns, EP-10 — GET /scam-patterns/{id})"],
 )
+app.include_router(
+    reports.router,
+    prefix="/api/v1",
+)
 
 
 @app.get("/", tags=["Health Check"])
@@ -65,9 +76,9 @@ def health_check():
             "FR-02: Phone Lookup (EP-04 GET /phones/{phone})",
             "FR-03: Scam Patterns (EP-05, EP-10)",
             "FR-06: Scan History (EP-03 GET /scans)",
+            "FR-04: Reports (EP-06 POST /reports, EP-09 GET /reports)",
         ],
         "removed_features": [
-            "FR-04 Reports (EP-06 POST, EP-09)",
             "FR-05 Auth + Me (EP-07, EP-08, EP-11)",
         ],
     }
