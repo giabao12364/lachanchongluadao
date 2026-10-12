@@ -7,14 +7,14 @@ from sqlalchemy.orm import Session
 
 from app.models.db_models import ScamReport, EntityType, ReportStatus
 from app.services.reports.report_validator import ValidatedReportEntity
-from app.services.reports.blacklist_aggregator import register_independent_report
+
 
 
 @dataclass
 class CreateReportResult:
     report_id: UUID
     status: str
-    is_duplicate: bool  
+    is_duplicate: bool  # True nếu đây là lần report thứ 2+ trùng của cùng user
 
 
 def create_report(
@@ -23,7 +23,10 @@ def create_report(
     entity: ValidatedReportEntity,
     description: str | None = None,
 ) -> CreateReportResult:
-   
+    """
+    Tạo 1 report mới. Nếu user này đã report đúng thực thể này rồi (BR-04-2),
+    KHÔNG tạo bản ghi mới — trả về report cũ kèm is_duplicate=True.
+    """
     existing = (
         db.query(ScamReport)
         .filter(
@@ -49,8 +52,9 @@ def create_report(
     )
     db.add(new_report)
     try:
-        db.flush()  
+        db.commit()
     except IntegrityError:
+        
         db.rollback()
         existing = (
             db.query(ScamReport)
@@ -66,13 +70,6 @@ def create_report(
             status=existing.status.value,
             is_duplicate=True,
         )
-
-    try:
-        register_independent_report(db, entity.entity_type, entity.normalized_value)
-        db.commit()  
-    except Exception:
-        db.rollback()  
-        raise
 
     db.refresh(new_report)
     return CreateReportResult(
