@@ -76,10 +76,9 @@ def health_check():
             "FR-02: Phone Lookup (EP-04 GET /phones/{phone})",
             "FR-03: Scam Patterns (EP-05, EP-10)",
             "FR-06: Scan History (EP-03 GET /scans)",
-            "FR-04: Reports (EP-06 POST /reports)",
+            "FR-04: Reports (EP-06 POST /reports, EP-09 GET /reports)",
         ],
         "removed_features": [
-            "FR-04 Reports (EP-09 GET /reports)",
             "FR-05 Auth + Me (EP-07, EP-08, EP-11)",
         ],
     }
